@@ -5,7 +5,7 @@
 From a normal macOS terminal **outside the Hermes sandbox**:
 
 ```bash
-cd /Users/alex/components/auto-router
+cd /Users/alex/hermes-stack/hermes-data/projects/auto-router
 docker compose up --build -d
 ```
 
