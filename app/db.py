@@ -12,7 +12,7 @@ _pool: asyncpg.Pool | None = None
 
 async def get_pool() -> asyncpg.Pool:
     global _pool
-    if _pool is None or _pool.is_closed():
+    if _pool is None or _pool.is_closing():
         _pool = await asyncpg.create_pool(
             SETTINGS.database_url,
             min_size=2,
