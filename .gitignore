@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local Postgres (pg-here)
+pg_local/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Lock files are fine to commit, but optional
+# uv.lock
