@@ -3,141 +3,198 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>auto-router admin</title>
+  <script>
+    /* Set the theme before first paint so there's no flash of the wrong theme. */
+    (function () {
+      var t = localStorage.getItem("ar-theme");
+      if (!t) {
+        t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      }
+      document.documentElement.dataset.theme = t;
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/static/tokens.css">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <h1>auto-router — admin (functional, unstyled)</h1>
+  <header class="app-header">
+    <div class="header-inner">
+      <a class="brand" href="#">
+        <img class="brand-logo" src="/static/logo.svg" alt="" width="28" height="28">
+        <span class="brand-name">auto<span class="brand-accent">router</span></span>
+      </a>
+      <nav class="nav" id="primary-nav" aria-label="Primary">
+        <button class="nav-link is-active" data-tab="log">Request log</button>
+        <button class="nav-link" data-tab="spend">Spend</button>
+        <button class="nav-link" data-tab="models">Models</button>
+        <button class="nav-link" data-tab="tiers">Tier mapping</button>
+        <button class="nav-link" data-tab="keys">API keys</button>
+        <button class="nav-link" data-tab="settings">Settings</button>
+      </nav>
+      <div class="header-actions">
+        <button class="icon-btn" id="theme-toggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">🌙</button>
+        <button class="icon-btn nav-toggle" id="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="primary-nav">☰</button>
+      </div>
+    </div>
+  </header>
+  <div class="drawer-backdrop" id="drawer-backdrop"></div>
 
-  <section id="auth-bar">
-    <label>Router API key:
-      <input type="password" id="router-key" placeholder="paste a key from ROUTER_API_KEYS / the Keys tab" size="48">
+  <div class="toolbar">
+    <label class="field">
+      <span class="field-label">Router API key</span>
+      <input type="password" id="router-key" placeholder="paste a router API key">
     </label>
-    <button id="save-key">Save key</button>
-    <span id="auth-status"></span>
-  </section>
+    <button class="btn btn-primary" id="save-key" type="button">Save key</button>
+    <span id="auth-status" class="status"></span>
+    <div id="decision-health" class="health"></div>
+  </div>
 
-  <div id="decision-health" class="health"></div>
+  <main>
+    <p id="error" class="error" role="alert"></p>
 
-  <nav>
-    <button data-tab="log">Request log</button>
-    <button data-tab="spend">Spend</button>
-    <button data-tab="models">Models</button>
-    <button data-tab="tiers">Tier mapping</button>
-    <button data-tab="keys">API keys</button>
-    <button data-tab="settings">Settings</button>
-  </nav>
+    <!-- Request log -->
+    <section id="tab-log" class="tab">
+      <div class="card">
+        <h1>Request log</h1>
+        <form id="log-filters" class="toolbar-row">
+          <label>Tier <select name="tier"><option value="">any</option><option>simple</option><option>medium</option><option>complex</option></select></label>
+          <label>Model <input name="model" placeholder="e.g. openai/gpt-4o-mini"></label>
+          <label>Result <select name="success"><option value="">any</option><option value="true">success</option><option value="false">fail</option></select></label>
+          <label>From <input type="date" name="start"></label>
+          <label>To <input type="date" name="end"></label>
+          <button class="btn btn-primary" type="submit">Apply</button>
+          <button class="btn" type="button" id="log-reset">Reset</button>
+        </form>
+        <div id="log-summary" class="mono"></div>
+        <table id="log-table" class="data-table">
+          <thead><tr>
+            <th>time</th><th>caller</th><th>tier</th><th>model</th>
+            <th>conf</th><th>gap</th><th>esc</th>
+            <th>in</th><th>out</th><th>cost</th><th>latency</th><th>ok</th><th>routing</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="toolbar-row">
+          <button class="btn" id="log-prev">Prev</button>
+          <span id="log-page" class="mono"></span>
+          <button class="btn" id="log-next">Next</button>
+        </div>
+      </div>
+    </section>
 
-  <p id="error" class="error"></p>
+    <!-- Spend -->
+    <section id="tab-spend" class="tab" hidden>
+      <div class="card">
+        <h1>Spend</h1>
+        <div class="toolbar-row">
+          <label>Bucket
+            <select id="spend-bucket"><option value="day">daily</option><option value="week">weekly</option><option value="month">monthly</option></select>
+          </label>
+          <button class="btn" id="spend-refresh">Refresh</button>
+        </div>
+        <div id="spend-totals"></div>
+        <div id="spend-balance"></div>
+      </div>
+      <div class="card">
+        <h2>By period</h2><table id="spend-periods" class="data-table"><thead><tr><th>period</th><th>cost</th><th>requests</th></tr></thead><tbody></tbody></table>
+        <h2>By tier</h2><table id="spend-tiers" class="data-table"><thead><tr><th>tier</th><th>cost</th><th>requests</th></tr></thead><tbody></tbody></table>
+        <h2>By model</h2><table id="spend-models" class="data-table"><thead><tr><th>model</th><th>cost</th><th>requests</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
 
-  <!-- Request log -->
-  <section id="tab-log" class="tab">
-    <h2>Request log</h2>
-    <form id="log-filters">
-      <label>Tier <select name="tier"><option value="">any</option><option>simple</option><option>medium</option><option>complex</option></select></label>
-      <label>Model <input name="model" placeholder="e.g. openai/gpt-4o-mini"></label>
-      <label>Result <select name="success"><option value="">any</option><option value="true">success</option><option value="false">fail</option></select></label>
-      <label>From <input type="date" name="start"></label>
-      <label>To <input type="date" name="end"></label>
-      <button type="submit">Apply</button>
-      <button type="button" id="log-reset">Reset</button>
-    </form>
-    <div id="log-summary"></div>
-    <table id="log-table" border="1" cellpadding="4">
-      <thead><tr>
-        <th>time</th><th>caller</th><th>tier</th><th>model</th>
-        <th>conf</th><th>gap</th><th>esc</th>
-        <th>in</th><th>out</th><th>cost</th><th>latency</th><th>ok</th><th>routing</th><th></th>
-      </tr></thead>
-      <tbody></tbody>
-    </table>
-    <button id="log-prev">Prev</button>
-    <span id="log-page"></span>
-    <button id="log-next">Next</button>
-  </section>
+    <!-- Model catalog -->
+    <section id="tab-models" class="tab" hidden>
+      <div class="card">
+        <h1>Model catalog</h1>
+        <p>Live OpenRouter catalog. Toggle a model off to hide it from the tier-editor
+        dropdown by default. (Only disabled models are stored; everything else is enabled.)</p>
+        <div class="toolbar-row">
+          <label>Search <input id="models-search" placeholder="name or slug"></label>
+          <label><input type="checkbox" id="models-only-enabled"> enabled only</label>
+        </div>
+        <div id="models-summary" class="mono"></div>
+        <table id="models-table" class="data-table">
+          <thead><tr>
+            <th>model</th><th>name</th><th>context</th><th>prompt</th><th>completion</th><th>enabled</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
 
-  <!-- Spend -->
-  <section id="tab-spend" class="tab" hidden>
-    <h2>Spend</h2>
-    <label>Bucket
-      <select id="spend-bucket"><option value="day">daily</option><option value="week">weekly</option><option value="month">monthly</option></select>
-    </label>
-    <button id="spend-refresh">Refresh</button>
-    <div id="spend-totals"></div>
-    <div id="spend-balance"></div>
-    <h3>By period</h3><table id="spend-periods" border="1" cellpadding="4"><thead><tr><th>period</th><th>cost</th><th>requests</th></tr></thead><tbody></tbody></table>
-    <h3>By tier</h3><table id="spend-tiers" border="1" cellpadding="4"><thead><tr><th>tier</th><th>cost</th><th>requests</th></tr></thead><tbody></tbody></table>
-    <h3>By model</h3><table id="spend-models" border="1" cellpadding="4"><thead><tr><th>model</th><th>cost</th><th>requests</th></tr></thead><tbody></tbody></table>
-  </section>
+    <!-- Tier mapping -->
+    <section id="tab-tiers" class="tab" hidden>
+      <div class="card">
+        <h1>Tier mapping</h1>
+        <p>Pick a model from the live OpenRouter catalog. Saving takes effect immediately (no redeploy).</p>
+        <div class="toolbar-row">
+          <label><input type="checkbox" id="tiers-show-all"> show all models (including disabled)</label>
+        </div>
+        <datalist id="model-list"></datalist>
+        <div id="tiers-editor"></div>
+        <div class="toolbar-row">
+          <button class="btn btn-primary" id="tiers-save">Save tier mapping</button>
+          <span id="tiers-status" class="status"></span>
+        </div>
+      </div>
+    </section>
 
-  <!-- Model catalog -->
-  <section id="tab-models" class="tab" hidden>
-    <h2>Model catalog</h2>
-    <p>Live OpenRouter catalog. Toggle a model off to hide it from the tier-editor
-    dropdown by default. (Only disabled models are stored; everything else is enabled.)</p>
-    <label>Search <input id="models-search" placeholder="name or slug"></label>
-    <label><input type="checkbox" id="models-only-enabled"> enabled only</label>
-    <div id="models-summary"></div>
-    <table id="models-table" border="1" cellpadding="4">
-      <thead><tr>
-        <th>model</th><th>name</th><th>context</th><th>prompt</th><th>completion</th><th>enabled</th>
-      </tr></thead>
-      <tbody></tbody>
-    </table>
-  </section>
+    <!-- Keys -->
+    <section id="tab-keys" class="tab" hidden>
+      <div class="card">
+        <h1>API keys</h1>
+        <table id="keys-table" class="data-table">
+          <thead><tr><th>caller</th><th>key</th><th>preview</th><th>created</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2>Create key</h2>
+        <form id="key-create" class="toolbar-row">
+          <label>Caller id <input name="caller_id" required></label>
+          <label><input type="checkbox" name="prompt_preview_enabled"> enable prompt preview</label>
+          <button class="btn btn-primary" type="submit">Create</button>
+        </form>
+        <div id="key-created" class="mono"></div>
+      </div>
+    </section>
 
-  <!-- Tier mapping -->
-  <section id="tab-tiers" class="tab" hidden>
-    <h2>Tier mapping</h2>
-    <p>Pick a model from the live OpenRouter catalog. Saving takes effect immediately (no redeploy).</p>
-    <label><input type="checkbox" id="tiers-show-all"> show all models (including disabled)</label>
-    <datalist id="model-list"></datalist>
-    <div id="tiers-editor"></div>
-    <button id="tiers-save">Save tier mapping</button>
-    <span id="tiers-status"></span>
-  </section>
-
-  <!-- Keys -->
-  <section id="tab-keys" class="tab" hidden>
-    <h2>API keys</h2>
-    <table id="keys-table" border="1" cellpadding="4">
-      <thead><tr><th>caller</th><th>key</th><th>preview</th><th>created</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <h3>Create key</h3>
-    <form id="key-create">
-      <label>Caller id <input name="caller_id" required></label>
-      <label><input type="checkbox" name="prompt_preview_enabled"> enable prompt preview</label>
-      <button type="submit">Create</button>
-    </form>
-    <div id="key-created"></div>
-  </section>
-
-  <!-- Settings -->
-  <section id="tab-settings" class="tab" hidden>
-    <h2>Settings</h2>
-    <p>Editable without redeploy. A named conservatism preset sets the
-    confidence-gap threshold; editing the threshold directly flips it to "custom".</p>
-    <form id="settings-form">
-      <label>Routing conservatism
-        <select id="settings-preset">
-          <option value="aggressive">aggressive</option>
-          <option value="balanced">balanced</option>
-          <option value="conservative">conservative</option>
-          <option value="custom">custom</option>
-        </select>
-      </label>
-      <br>
-      <label>Confidence-gap threshold
-        <input type="number" id="settings-gap" step="0.01" min="0.01" max="1">
-      </label>
-      <br>
-      <label><input type="checkbox" id="settings-preview-default"> default prompt preview on for new keys</label>
-      <br>
-      <button type="submit">Save settings</button>
-    </form>
-    <span id="settings-status"></span>
-  </section>
+    <!-- Settings -->
+    <section id="tab-settings" class="tab" hidden>
+      <div class="card">
+        <h1>Settings</h1>
+        <p>Editable without redeploy. A named conservatism preset sets the
+        confidence-gap threshold; editing the threshold directly flips it to "custom".</p>
+        <form id="settings-form">
+          <div class="toolbar-row">
+            <label>Routing conservatism
+              <select id="settings-preset">
+                <option value="aggressive">aggressive</option>
+                <option value="balanced">balanced</option>
+                <option value="conservative">conservative</option>
+                <option value="custom">custom</option>
+              </select>
+            </label>
+            <label>Confidence-gap threshold
+              <input type="number" id="settings-gap" step="0.01" min="0.01" max="1">
+            </label>
+          </div>
+          <div class="toolbar-row">
+            <label><input type="checkbox" id="settings-preview-default"> default prompt preview on for new keys</label>
+          </div>
+          <div class="toolbar-row">
+            <button class="btn btn-primary" type="submit">Save settings</button>
+            <span id="settings-status" class="status"></span>
+          </div>
+        </form>
+      </div>
+    </section>
+  </main>
 
   <script src="/static/app.js"></script>
 </body>

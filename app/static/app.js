@@ -1,5 +1,5 @@
-// Minimal functional (unstyled) admin UI for auto-router.
-// All /api/* calls send the router key as a bearer token, stored in localStorage.
+// auto-router admin UI. All /api/* calls send the router key as a bearer token,
+// stored in localStorage. Phase 3: themed, responsive, mobile drawer.
 const state = {
   key: localStorage.getItem("router_key") || "",
   models: [],
@@ -14,7 +14,17 @@ const state = {
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, text) => { const e = document.createElement(tag); if (text != null) e.textContent = text; return e; };
 
-function showError(msg) { $("p#error").textContent = msg || ""; }
+// A table cell that carries its column name so the mobile card layout can show a label.
+function cell(label, value, cls) {
+  const td = el("td");
+  if (label) td.dataset.label = label;
+  if (cls) td.className = cls;
+  if (value instanceof Node) td.appendChild(value);
+  else td.textContent = value == null ? "" : String(value);
+  return td;
+}
+
+function showError(msg) { $("#error").textContent = msg || ""; }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -50,6 +60,50 @@ function fmtAgo(iso) {
   return Math.floor(h / 24) + "d ago";
 }
 
+// --- theme toggle ---
+function currentTheme() { return document.documentElement.dataset.theme || "light"; }
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem("ar-theme", t);
+  const btn = $("#theme-toggle");
+  if (btn) {
+    const next = t === "dark" ? "light" : "dark";
+    btn.textContent = t === "dark" ? "☀" : "🌙";
+    btn.setAttribute("aria-pressed", String(t === "dark"));
+    btn.setAttribute("aria-label", "Switch to " + next + " mode");
+    btn.setAttribute("title", "Switch to " + next + " mode");
+  }
+}
+applyTheme(currentTheme());
+$("#theme-toggle").onclick = () => applyTheme(currentTheme() === "dark" ? "light" : "dark");
+
+// --- mobile nav drawer ---
+const navEl = $("#primary-nav");
+const backdrop = $("#drawer-backdrop");
+const navToggle = $("#nav-toggle");
+function openDrawer() {
+  navEl.classList.add("is-open");
+  backdrop.classList.add("is-open");
+  navToggle.setAttribute("aria-expanded", "true");
+  // Focus the first drawer item so keyboard users land inside the drawer. Deferred: the
+  // click that opened the drawer lands focus on the toggle button itself, and the drawer is
+  // not focusable until its new visibility has been computed.
+  const focusFirstItem = () => {
+    const first = navEl.querySelector("button");
+    if (first) first.focus();
+  };
+  requestAnimationFrame(focusFirstItem);
+  setTimeout(focusFirstItem, 0);
+}
+function closeDrawer() {
+  navEl.classList.remove("is-open");
+  backdrop.classList.remove("is-open");
+  navToggle.setAttribute("aria-expanded", "false");
+}
+navToggle.onclick = () => (navEl.classList.contains("is-open") ? closeDrawer() : openDrawer());
+backdrop.onclick = closeDrawer;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
 // --- auth bar ---
 $("#save-key").onclick = () => {
   state.key = $("#router-key").value.trim();
@@ -64,6 +118,9 @@ document.querySelectorAll("nav button").forEach((btn) => {
   btn.onclick = () => {
     document.querySelectorAll(".tab").forEach((s) => (s.hidden = true));
     $("#tab-" + btn.dataset.tab).hidden = false;
+    document.querySelectorAll(".nav-link").forEach((b) => b.classList.toggle("is-active", b === btn));
+    closeDrawer();
+    window.scrollTo(0, 0);
     if (btn.dataset.tab === "log") loadLog();
     if (btn.dataset.tab === "spend") { loadSpend(); loadHealth(); }
     if (btn.dataset.tab === "models") loadModelCatalog();
@@ -104,16 +161,18 @@ async function loadLog() {
       const routing = el("span", r.used_fallback ? "FALLBACK" : (r.escalation_fired ? "escalated" : "normal"));
       routing.className = r.used_fallback ? "badge fallback" : (r.escalation_fired ? "badge escalated" : "badge normal");
       const cells = [
-        fmtTime(r.timestamp), r.caller_id, r.tier, r.model,
-        fmtProb(r.confidence), fmtProb(r.probability_gap), r.escalation_fired ? "yes" : "",
-        r.input_tokens, r.output_tokens, fmtCost(r.cost_usd), r.latency_ms + "ms",
-        r.success ? "ok" : "FAIL",
+        ["time", fmtTime(r.timestamp)], ["caller", r.caller_id], ["tier", r.tier], ["model", r.model],
+        ["conf", fmtProb(r.confidence), "num"], ["gap", fmtProb(r.probability_gap), "num"],
+        ["esc", r.escalation_fired ? "yes" : "", "num"],
+        ["in", r.input_tokens, "num"], ["out", r.output_tokens, "num"], ["cost", fmtCost(r.cost_usd), "num"],
+        ["latency", r.latency_ms + "ms", "num"], ["ok", r.success ? "ok" : "FAIL"],
       ];
-      cells.forEach((c) => tr.appendChild(el("td", c)));
-      const rt = el("td"); rt.appendChild(routing); tr.appendChild(rt);
+      cells.forEach(([label, c, cls]) => tr.appendChild(cell(label, c, cls)));
+      const rt = cell("routing"); rt.appendChild(routing); tr.appendChild(rt);
 
-      const dt = el("td");
+      const dt = cell("");
       const btn = el("button", "details");
+      btn.className = "btn btn-ghost";
       btn.onclick = () => { detail.hidden = !detail.hidden; };
       dt.appendChild(btn); tr.appendChild(dt);
       tb.appendChild(tr);
@@ -134,7 +193,7 @@ async function loadLog() {
       tb.appendChild(detail);
     }
     state.logTotal = data.total;
-    $("#log-summary").textContent = `${data.total} total matching rows; showing ${data.offset + 1}-${Math.min(data.offset + data.limit, data.total)}`;
+    $("#log-summary").textContent = `${data.total} total matching rows; showing ${data.total ? data.offset + 1 : 0}-${Math.min(data.offset + data.limit, data.total)}`;
     $("#log-page").textContent = ` page ${Math.floor(data.offset / data.limit) + 1} `;
     $("#log-prev").disabled = data.offset <= 0;
     $("#log-next").disabled = data.offset + data.limit >= data.total;
@@ -153,9 +212,9 @@ async function loadSpend() {
     $("#spend-totals").textContent =
       `App-calculated spend: ${fmtCost(s.total_cost)} across ${s.total_requests} requests ` +
       `(${s.input_tokens} in / ${s.output_tokens} out tokens).`;
-    fillTable("#spend-periods tbody", s.by_period, (r) => [fmtTime(r.period), fmtCost(r.cost), r.requests]);
-    fillTable("#spend-tiers tbody", s.by_tier, (r) => [r.tier, fmtCost(r.cost), r.requests]);
-    fillTable("#spend-models tbody", s.by_model, (r) => [r.model, fmtCost(r.cost), r.requests]);
+    fillTable("#spend-periods tbody", ["period", "cost", "requests"], s.by_period, (r) => [fmtTime(r.period), fmtCost(r.cost), r.requests]);
+    fillTable("#spend-tiers tbody", ["tier", "cost", "requests"], s.by_tier, (r) => [r.tier, fmtCost(r.cost), r.requests]);
+    fillTable("#spend-models tbody", ["model", "cost", "requests"], s.by_model, (r) => [r.model, fmtCost(r.cost), r.requests]);
   } catch (e) { showError("Spend: " + e.message); }
   try {
     const c = await api("/api/openrouter/credits");
@@ -164,9 +223,13 @@ async function loadSpend() {
       `Note: OpenRouter usage is account-wide and lifetime; the app total above is only what this router has logged.`;
   } catch (e) { $("#spend-balance").textContent = "OpenRouter balance unavailable: " + e.message; }
 }
-function fillTable(sel, rows, mapFn) {
+function fillTable(sel, labels, rows, mapFn) {
   const tb = $(sel); tb.innerHTML = "";
-  for (const r of rows) { const tr = el("tr"); mapFn(r).forEach((c) => tr.appendChild(el("td", c))); tb.appendChild(tr); }
+  for (const r of rows) {
+    const tr = el("tr");
+    mapFn(r).forEach((c, i) => tr.appendChild(cell(labels[i], c)));
+    tb.appendChild(tr);
+  }
 }
 $("#spend-bucket").onchange = loadSpend;
 $("#spend-refresh").onclick = loadSpend;
@@ -217,9 +280,10 @@ function renderModelCatalog() {
     const tr = el("tr");
     tr.className = enabled ? "" : "row-disabled";
     const price = m.pricing || {};
+    const labels = ["model", "name", "context", "prompt", "completion"];
     [m.id, m.name || "", m.context_length != null ? m.context_length : "—",
-     fmtPrice(price.prompt), fmtPrice(price.completion)].forEach((c) => tr.appendChild(el("td", c)));
-    const etd = el("td");
+     fmtPrice(price.prompt), fmtPrice(price.completion)].forEach((c, i) => tr.appendChild(cell(labels[i], c)));
+    const etd = cell("enabled");
     const toggle = el("button", enabled ? "enabled" : "disabled");
     toggle.className = enabled ? "toggle on" : "toggle off";
     toggle.onclick = async () => {
@@ -249,6 +313,7 @@ async function loadTiers() {
     for (const name of ["simple", "medium", "complex"]) {
       const t = tiers[name] || {};
       const wrap = el("div");
+      wrap.className = "tier-row";
       wrap.appendChild(el("label", name + ": "));
       const input = el("input"); input.setAttribute("list", "model-list"); input.value = t.model || "";
       input.dataset.tier = name; input.size = 40; input.className = "tier-model";
@@ -286,8 +351,12 @@ async function loadKeys() {
     const tb = $("#keys-table tbody"); tb.innerHTML = "";
     for (const k of data.data) {
       const tr = el("tr");
-      [k.caller_id, k.api_key, k.prompt_preview_enabled ? "on" : "off", fmtTime(k.created_at)].forEach((c) => tr.appendChild(el("td", c)));
-      const td = el("td"); const btn = el("button", "Revoke");
+      const labels = ["caller", "key", "preview", "created"];
+      [k.caller_id, k.api_key, k.prompt_preview_enabled ? "on" : "off", fmtTime(k.created_at)]
+        .forEach((c, i) => tr.appendChild(cell(labels[i], c)));
+      const td = cell("");
+      const btn = el("button", "Revoke");
+      btn.className = "btn btn-danger";
       btn.onclick = async () => { try { await api("/api/keys/" + k.id, { method: "DELETE" }); loadKeys(); } catch (e) { showError("Revoke: " + e.message); } };
       td.appendChild(btn); tr.appendChild(td);
       tb.appendChild(tr);
@@ -354,3 +423,4 @@ $("#settings-form").onsubmit = async (e) => {
 $("#router-key").value = state.key;
 if (state.key) loadModels();
 loadHealth();
+loadLog(); // the Request log tab is visible on load — populate it instead of showing an empty table

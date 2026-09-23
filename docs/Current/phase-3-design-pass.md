@@ -1,8 +1,7 @@
 # Model Router App — Phase 3: Design Pass
 
-**Status: build now — but only after Phase 2's Definition of Done is confirmed, and only
-after the aesthetic direction gap below is resolved.** Unlike Phases 1 and 2, this phase is
-NOT ready to greenlight as-is — see "Before starting this phase" first.
+**Status: GREENLIT — building on `feature/phase-3-design-pass`.** The aesthetic direction gap
+(collapsed below) is now resolved — see "Aesthetic direction — RESOLVED".
 
 ## Dependency on Phase 2
 This phase styles the functional shell built in Phase 2. It does not add new features or
@@ -32,6 +31,40 @@ business, a generic invented result is the most likely outcome to get rejected a
 - Provide actual design tokens (hex codes, font choices) if Alex already has a preference
 
 Whichever of these Alex picks, add it to this doc as a new section before greenlighting.
+
+## Aesthetic direction — RESOLVED (2026-09-23)
+
+Alex's decision: **match rebirthwebdesign.com.au** (brand consistency — this is Alex's own
+agency site, an Astro + Tailwind build). Tokens below were extracted from the live site's
+compiled CSS, not invented.
+
+**Colour** (light / dark):
+
+| Token | Light | Dark |
+|-------|-------|------|
+| primary | `#0161EF` (rgb 1 97 239) | same |
+| primary-hover / secondary | `#0154CF` | same |
+| accent | `#6D28D9` (violet) | same |
+| success | `#107A57` | same |
+| page background | `#FFFFFF` | `#030620` (deep navy) |
+| panel background | `#F7F8F8`-ish surface | `#080C28` |
+| heading text | `#000000` | `#F7F8F8` |
+| body text | `#101010` | `#E5ECF6` (light blue-grey) |
+| muted text | `rgb(16 16 16 / 66%)` | `rgb(229 236 246 / 60%)` |
+| border | `rgb(16 16 16 / 12%)` | `rgb(255 255 255 / 10%)` |
+
+**Type:** Inter (Variable) for sans / heading / body throughout — the site uses Inter for all
+three roles. Type scale observed: `3.75rem / 3rem / 1.5rem / 1.25rem / 1.125rem / 1rem /
+0.875rem`. Monospace (`ui-monospace, SFMono-Regular, Menlo, …`) is used for code — appropriate
+for a developer tool and to be used for slugs, keys, and numeric/log columns here.
+
+**Shape & layout:** pill radius (`9999px`) is the dominant motif (buttons/badges/nav pills);
+cards and inputs use `0.375rem–0.75rem` (6–12px). Sticky top header with a bottom border,
+horizontally-centred nav on desktop that collapses to a mobile drawer.
+
+**Feel:** modern, clean, high-performance; vivid-blue primary over deep-navy dark mode; soft
+radii; generous whitespace. This is a *developer tool*, so keep it denser than the marketing
+site (tables/logs need information density) while reusing the same palette, type, and shapes.
 
 ## Scope
 - Design system / tokens (color palette, type scale, spacing)

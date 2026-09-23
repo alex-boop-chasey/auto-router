@@ -1,0 +1,213 @@
+{
+  "base": "http://127.0.0.1:8766/",
+  "checks": [
+    {
+      "name": "theme initialises (boot script)",
+      "pass": true,
+      "detail": "data-theme=light"
+    },
+    {
+      "name": "Inter applied from tokens",
+      "pass": true,
+      "detail": "Inter, \"Inter Variable\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif"
+    },
+    {
+      "name": "brand primary token in use on primary button",
+      "pass": true,
+      "detail": "rgb(1, 97, 239)"
+    },
+    {
+      "name": "health indicator rendered",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "logo asset loaded",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "dark mode toggles",
+      "pass": true,
+      "detail": "data-theme=dark"
+    },
+    {
+      "name": "dark mode swaps the --bg-page token",
+      "pass": true,
+      "detail": "#030620"
+    },
+    {
+      "name": "dark mode actually repaints background",
+      "pass": true,
+      "detail": "rgb(3, 6, 32)"
+    },
+    {
+      "name": "theme choice persists",
+      "pass": true,
+      "detail": "dark"
+    },
+    {
+      "name": "toggles back to light",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "tab \"log\" renders content",
+      "pass": true,
+      "detail": "items=6"
+    },
+    {
+      "name": "tab \"spend\" renders content",
+      "pass": true,
+      "detail": "items=1"
+    },
+    {
+      "name": "tab \"models\" renders content",
+      "pass": true,
+      "detail": "items=4"
+    },
+    {
+      "name": "tab \"tiers\" renders content",
+      "pass": true,
+      "detail": "items=3"
+    },
+    {
+      "name": "tab \"keys\" renders content",
+      "pass": true,
+      "detail": "items=1"
+    },
+    {
+      "name": "tab \"settings\" renders content",
+      "pass": true,
+      "detail": "items=1"
+    },
+    {
+      "name": "routing transparency badges present",
+      "pass": true,
+      "detail": "NORMAL,ESCALATED,FALLBACK"
+    },
+    {
+      "name": "per-request detail expands",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "badges render in one consistent case",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "API key placeholder is not truncated",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "theme toggle label states the action",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "no horizontal scroll at 375px",
+      "pass": true,
+      "detail": "{\"scrollW\":375,\"innerW\":375,\"bodyScrollW\":375}"
+    },
+    {
+      "name": "no element wider than the viewport",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "viewport really is 375px",
+      "pass": true,
+      "detail": "375"
+    },
+    {
+      "name": "mobile nav hidden behind toggle",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "tables collapsed to stacked cards",
+      "pass": true,
+      "detail": "tbody tr display=block"
+    },
+    {
+      "name": "card layout shows column labels",
+      "pass": true,
+      "detail": "\"time\""
+    },
+    {
+      "name": "drawer opens",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "backdrop shown",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "aria-expanded set",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "drawer links are hit-testable while open",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "Escape closes drawer",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "keyboard opens drawer",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "focus moves into drawer",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "drawer closes after picking a tab",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "selected tab switched",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "active nav state tracks tab",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "dark mode on mobile",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "no console errors",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "no uncaught page errors",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "no failed requests",
+      "pass": true,
+      "detail": ""
+    }
+  ],
+  "consoleErrors": [],
+  "pageErrors": [],
+  "requestFailures": []
+}

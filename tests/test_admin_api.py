@@ -227,6 +227,12 @@ async def test_ui_index_served(client: AsyncClient):
     assert r.status_code == 200
     assert "auto-router" in r.text
     assert "/static/app.js" in r.text
+    # Phase 3: themed design system + responsive shell must be wired in.
+    assert "/static/tokens.css" in r.text
+    assert "/static/style.css" in r.text
+    assert "/static/logo.svg" in r.text
+    assert 'id="theme-toggle"' in r.text
+    assert 'id="nav-toggle"' in r.text
 
 
 @pytest.mark.anyio
@@ -234,6 +240,21 @@ async def test_static_app_js_served(client: AsyncClient):
     r = await client.get("/static/app.js")
     assert r.status_code == 200
     assert "loadLog" in r.text
+    # Phase 3: theme toggle + mobile drawer behaviour.
+    assert "applyTheme" in r.text
+    assert "openDrawer" in r.text
+
+
+@pytest.mark.anyio
+async def test_static_phase3_assets_served(client: AsyncClient):
+    for path, needle in [
+        ("/static/tokens.css", "--color-primary"),
+        ("/static/style.css", ".nav.is-open"),
+        ("/static/logo.svg", "<svg"),
+    ]:
+        r = await client.get(path)
+        assert r.status_code == 200, path
+        assert needle in r.text, path
 
 
 # --- Phase 2.5: settings --------------------------------------------------
