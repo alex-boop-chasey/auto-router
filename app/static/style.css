@@ -1,0 +1,9 @@
+/* Intentionally minimal — Phase 3 owns real design. Just enough for readability. */
+body { font-family: system-ui, sans-serif; margin: 1rem; }
+nav button { margin-right: .5rem; }
+.tab { margin-top: 1rem; }
+table { border-collapse: collapse; margin: .5rem 0; font-size: .85rem; }
+th, td { border: 1px solid #999; padding: 3px 6px; text-align: left; }
+.error { color: #b00; white-space: pre-wrap; }
+#auth-bar { margin: .5rem 0; }
+#tiers-editor > div { margin: .3rem 0; }

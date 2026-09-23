@@ -5,16 +5,19 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .config import SETTINGS, load_tiers, tier_to_model
+from . import admin_api
+from .config import PROJECT_ROOT, SETTINGS, load_tiers, tier_to_model
 from .db import init_db, log_request, verify_api_key
 from .decision import classify_tier
 from .fallback import flatten_messages
 from .proxy import non_stream_completion, stream_completion
 
 router = APIRouter()
+STATIC_DIR = PROJECT_ROOT / "app" / "static"
 
 
 class ChatMessage(BaseModel):
@@ -41,6 +44,9 @@ def create_app(init_db_on_startup: bool = True) -> FastAPI:
 
     app = FastAPI(title="auto-router", version="0.1.0", lifespan=_lifespan)
     app.include_router(router)
+    app.include_router(admin_api.router)
+    if STATIC_DIR.exists():
+        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     return app
 
 
@@ -50,6 +56,11 @@ app = create_app()
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/", include_in_schema=False)
+async def ui_index() -> FileResponse:
+    return FileResponse(str(STATIC_DIR / "index.html"))
 
 
 @router.get("/v1/models", dependencies=[Depends(verify_api_key)])

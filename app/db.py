@@ -161,3 +161,194 @@ async def get_recent_requests(limit: int = 20) -> list[dict[str, Any]]:
             limit,
         )
     return [dict(r) for r in rows]
+
+
+_REQUEST_COLUMNS = (
+    "id, timestamp, caller_id, tier, model, input_tokens, output_tokens, "
+    "cost_usd, latency_ms, success, error, prompt_preview, used_fallback, jev_error"
+)
+
+
+def _build_filters(
+    *,
+    tier: str | None,
+    model: str | None,
+    success: bool | None,
+    start: Any,
+    end: Any,
+) -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    def add(clause: str, value: Any) -> None:
+        params.append(value)
+        clauses.append(clause.format(n=len(params)))
+
+    if tier:
+        add("tier = ${n}", tier)
+    if model:
+        add("model = ${n}", model)
+    if success is not None:
+        add("success = ${n}", success)
+    if start is not None:
+        add("timestamp >= ${n}", start)
+    if end is not None:
+        add("timestamp <= ${n}", end)
+
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, params
+
+
+def _coerce_cost(row: dict[str, Any]) -> dict[str, Any]:
+    """asyncpg returns NUMERIC as Decimal, which pydantic v2 serialises to a
+    string. Coerce cost fields to float so API consumers get real numbers."""
+    for key in ("cost_usd", "cost"):
+        if row.get(key) is not None:
+            row[key] = float(row[key])
+    return row
+
+
+async def list_requests(
+    *,
+    tier: str | None = None,
+    model: str | None = None,
+    success: bool | None = None,
+    start: Any = None,
+    end: Any = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Paginated, filterable request log. Returns {rows, total, limit, offset}."""
+    where, params = _build_filters(tier=tier, model=model, success=success, start=start, end=end)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(f"SELECT count(*) FROM requests{where}", *params)
+        rows = await conn.fetch(
+            f"""
+            SELECT {_REQUEST_COLUMNS}
+            FROM requests{where}
+            ORDER BY timestamp DESC
+            LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
+            """,
+            *params,
+            limit,
+            offset,
+        )
+    return {
+        "rows": [_coerce_cost(dict(r)) for r in rows],
+        "total": int(total),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+async def spend_summary(
+    *,
+    bucket: str = "day",
+    start: Any = None,
+    end: Any = None,
+) -> dict[str, Any]:
+    """Aggregated spend: totals, by period bucket, by tier, and by model."""
+    if bucket not in {"day", "week", "month"}:
+        bucket = "day"
+    where, params = _build_filters(tier=None, model=None, success=None, start=start, end=end)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        totals = await conn.fetchrow(
+            f"""
+            SELECT COALESCE(sum(cost_usd), 0) AS cost,
+                   count(*) AS requests,
+                   COALESCE(sum(input_tokens), 0) AS input_tokens,
+                   COALESCE(sum(output_tokens), 0) AS output_tokens
+            FROM requests{where}
+            """,
+            *params,
+        )
+        by_period = await conn.fetch(
+            f"""
+            SELECT date_trunc(${len(params) + 1}, timestamp) AS period,
+                   COALESCE(sum(cost_usd), 0) AS cost,
+                   count(*) AS requests
+            FROM requests{where}
+            GROUP BY period
+            ORDER BY period
+            """,
+            *params,
+            bucket,
+        )
+        by_tier = await conn.fetch(
+            f"""
+            SELECT tier,
+                   COALESCE(sum(cost_usd), 0) AS cost,
+                   count(*) AS requests
+            FROM requests{where}
+            GROUP BY tier
+            ORDER BY cost DESC
+            """,
+            *params,
+        )
+        by_model = await conn.fetch(
+            f"""
+            SELECT model,
+                   COALESCE(sum(cost_usd), 0) AS cost,
+                   count(*) AS requests
+            FROM requests{where}
+            GROUP BY model
+            ORDER BY cost DESC
+            """,
+            *params,
+        )
+    return {
+        "bucket": bucket,
+        "total_cost": float(totals["cost"]),
+        "total_requests": int(totals["requests"]),
+        "input_tokens": int(totals["input_tokens"]),
+        "output_tokens": int(totals["output_tokens"]),
+        "by_period": [_coerce_cost(dict(r)) for r in by_period],
+        "by_tier": [_coerce_cost(dict(r)) for r in by_tier],
+        "by_model": [_coerce_cost(dict(r)) for r in by_model],
+    }
+
+
+# --- API key management ---------------------------------------------------
+
+
+async def list_keys() -> list[dict[str, Any]]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, caller_id, api_key, created_at, prompt_preview_enabled
+            FROM keys
+            ORDER BY created_at
+            """
+        )
+    return [dict(r) for r in rows]
+
+
+async def create_key(
+    *,
+    caller_id: str,
+    api_key: str,
+    prompt_preview_enabled: bool = False,
+) -> dict[str, Any]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO keys (caller_id, api_key, prompt_preview_enabled)
+            VALUES ($1, $2, $3)
+            RETURNING id, caller_id, api_key, created_at, prompt_preview_enabled
+            """,
+            caller_id,
+            api_key,
+            prompt_preview_enabled,
+        )
+    return dict(row)
+
+
+async def delete_key(key_id: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("DELETE FROM keys WHERE id = $1 RETURNING id", key_id)
+    return row is not None

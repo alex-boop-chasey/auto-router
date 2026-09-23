@@ -36,6 +36,10 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      # Bind-mount config so tier-mapping edits from the UI persist on the host
+      # and take effect immediately (load_tiers reads the file per request).
+      - ./config:/app/config
     networks:
       - auto-router
       - hermes-net
