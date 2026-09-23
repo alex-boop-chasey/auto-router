@@ -17,11 +17,15 @@
     <span id="auth-status"></span>
   </section>
 
+  <div id="decision-health" class="health"></div>
+
   <nav>
     <button data-tab="log">Request log</button>
     <button data-tab="spend">Spend</button>
+    <button data-tab="models">Models</button>
     <button data-tab="tiers">Tier mapping</button>
     <button data-tab="keys">API keys</button>
+    <button data-tab="settings">Settings</button>
   </nav>
 
   <p id="error" class="error"></p>
@@ -41,8 +45,9 @@
     <div id="log-summary"></div>
     <table id="log-table" border="1" cellpadding="4">
       <thead><tr>
-        <th>time</th><th>caller</th><th>tier</th><th>model</th><th>in</th><th>out</th>
-        <th>cost</th><th>latency</th><th>ok</th><th>fallback</th><th>error</th>
+        <th>time</th><th>caller</th><th>tier</th><th>model</th>
+        <th>conf</th><th>gap</th><th>esc</th>
+        <th>in</th><th>out</th><th>cost</th><th>latency</th><th>ok</th><th>routing</th><th></th>
       </tr></thead>
       <tbody></tbody>
     </table>
@@ -65,10 +70,27 @@
     <h3>By model</h3><table id="spend-models" border="1" cellpadding="4"><thead><tr><th>model</th><th>cost</th><th>requests</th></tr></thead><tbody></tbody></table>
   </section>
 
+  <!-- Model catalog -->
+  <section id="tab-models" class="tab" hidden>
+    <h2>Model catalog</h2>
+    <p>Live OpenRouter catalog. Toggle a model off to hide it from the tier-editor
+    dropdown by default. (Only disabled models are stored; everything else is enabled.)</p>
+    <label>Search <input id="models-search" placeholder="name or slug"></label>
+    <label><input type="checkbox" id="models-only-enabled"> enabled only</label>
+    <div id="models-summary"></div>
+    <table id="models-table" border="1" cellpadding="4">
+      <thead><tr>
+        <th>model</th><th>name</th><th>context</th><th>prompt</th><th>completion</th><th>enabled</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
   <!-- Tier mapping -->
   <section id="tab-tiers" class="tab" hidden>
     <h2>Tier mapping</h2>
     <p>Pick a model from the live OpenRouter catalog. Saving takes effect immediately (no redeploy).</p>
+    <label><input type="checkbox" id="tiers-show-all"> show all models (including disabled)</label>
     <datalist id="model-list"></datalist>
     <div id="tiers-editor"></div>
     <button id="tiers-save">Save tier mapping</button>
@@ -89,6 +111,32 @@
       <button type="submit">Create</button>
     </form>
     <div id="key-created"></div>
+  </section>
+
+  <!-- Settings -->
+  <section id="tab-settings" class="tab" hidden>
+    <h2>Settings</h2>
+    <p>Editable without redeploy. A named conservatism preset sets the
+    confidence-gap threshold; editing the threshold directly flips it to "custom".</p>
+    <form id="settings-form">
+      <label>Routing conservatism
+        <select id="settings-preset">
+          <option value="aggressive">aggressive</option>
+          <option value="balanced">balanced</option>
+          <option value="conservative">conservative</option>
+          <option value="custom">custom</option>
+        </select>
+      </label>
+      <br>
+      <label>Confidence-gap threshold
+        <input type="number" id="settings-gap" step="0.01" min="0.01" max="1">
+      </label>
+      <br>
+      <label><input type="checkbox" id="settings-preview-default"> default prompt preview on for new keys</label>
+      <br>
+      <button type="submit">Save settings</button>
+    </form>
+    <span id="settings-status"></span>
   </section>
 
   <script src="/static/app.js"></script>

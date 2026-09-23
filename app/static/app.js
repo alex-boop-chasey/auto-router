@@ -3,6 +3,9 @@
 const state = {
   key: localStorage.getItem("router_key") || "",
   models: [],
+  disabled: new Set(),
+  settings: null,
+  presets: null,
   logOffset: 0,
   logLimit: 50,
   logTotal: 0,
@@ -11,7 +14,7 @@ const state = {
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, text) => { const e = document.createElement(tag); if (text != null) e.textContent = text; return e; };
 
-function showError(msg) { $("#error").textContent = msg || ""; }
+function showError(msg) { $("p#error").textContent = msg || ""; }
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -25,6 +28,27 @@ async function api(path, opts = {}) {
 
 const fmtCost = (c) => "$" + Number(c || 0).toFixed(6);
 const fmtTime = (t) => (t ? new Date(t).toLocaleString() : "");
+const fmtProb = (v) => (v == null ? "" : Number(v).toFixed(2));
+const fmtPrice = (v) => {
+  if (v == null || v === "") return "—";
+  const n = Number(v);
+  if (!isFinite(n)) return "—";
+  if (n === 0) return "$0";
+  const perM = n * 1e6;
+  return "$" + (perM >= 0.01 ? perM.toFixed(2) : perM.toFixed(4)) + "/M";
+};
+function fmtAgo(iso) {
+  if (!iso) return "never";
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 0) return "just now";
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return s + "s ago";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m ago";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + "h ago";
+  return Math.floor(h / 24) + "d ago";
+}
 
 // --- auth bar ---
 $("#save-key").onclick = () => {
@@ -32,6 +56,7 @@ $("#save-key").onclick = () => {
   localStorage.setItem("router_key", state.key);
   $("#auth-status").textContent = state.key ? "key saved" : "key cleared";
   loadModels();
+  loadHealth();
 };
 
 // --- tabs ---
@@ -40,11 +65,26 @@ document.querySelectorAll("nav button").forEach((btn) => {
     document.querySelectorAll(".tab").forEach((s) => (s.hidden = true));
     $("#tab-" + btn.dataset.tab).hidden = false;
     if (btn.dataset.tab === "log") loadLog();
-    if (btn.dataset.tab === "spend") loadSpend();
+    if (btn.dataset.tab === "spend") { loadSpend(); loadHealth(); }
+    if (btn.dataset.tab === "models") loadModelCatalog();
     if (btn.dataset.tab === "tiers") loadTiers();
     if (btn.dataset.tab === "keys") loadKeys();
+    if (btn.dataset.tab === "settings") loadSettings();
   };
 });
+
+// --- health indicator ---
+async function loadHealth() {
+  const box = $("#decision-health");
+  try {
+    const h = await fetch("/health").then((r) => r.json());
+    box.textContent = "Decision layer last confirmed working: " + fmtAgo(h.last_successful_decision_at);
+    box.className = "health " + (h.last_successful_decision_at ? "ok" : "warn");
+  } catch (e) {
+    box.textContent = "Decision layer status unavailable: " + e.message;
+    box.className = "health warn";
+  }
+}
 
 // --- request log ---
 async function loadLog() {
@@ -60,10 +100,38 @@ async function loadLog() {
     tb.innerHTML = "";
     for (const r of data.rows) {
       const tr = el("tr");
-      [fmtTime(r.timestamp), r.caller_id, r.tier, r.model, r.input_tokens, r.output_tokens,
-       fmtCost(r.cost_usd), r.latency_ms + "ms", r.success ? "ok" : "FAIL", r.used_fallback ? "yes" : "",
-       r.error || ""].forEach((c) => tr.appendChild(el("td", c)));
+      tr.className = r.used_fallback ? "row-fallback" : "";
+      const routing = el("span", r.used_fallback ? "FALLBACK" : (r.escalation_fired ? "escalated" : "normal"));
+      routing.className = r.used_fallback ? "badge fallback" : (r.escalation_fired ? "badge escalated" : "badge normal");
+      const cells = [
+        fmtTime(r.timestamp), r.caller_id, r.tier, r.model,
+        fmtProb(r.confidence), fmtProb(r.probability_gap), r.escalation_fired ? "yes" : "",
+        r.input_tokens, r.output_tokens, fmtCost(r.cost_usd), r.latency_ms + "ms",
+        r.success ? "ok" : "FAIL",
+      ];
+      cells.forEach((c) => tr.appendChild(el("td", c)));
+      const rt = el("td"); rt.appendChild(routing); tr.appendChild(rt);
+
+      const dt = el("td");
+      const btn = el("button", "details");
+      btn.onclick = () => { detail.hidden = !detail.hidden; };
+      dt.appendChild(btn); tr.appendChild(dt);
       tb.appendChild(tr);
+
+      // hidden detail row
+      const detail = el("tr");
+      detail.className = "row-detail";
+      detail.hidden = true;
+      const dtd = el("td"); dtd.colSpan = 14;
+      const prob = r.probabilities
+        ? Object.entries(r.probabilities).map(([k, v]) => k + " " + fmtProb(v)).join("  ·  ")
+        : "(none)";
+      dtd.appendChild(el("div", "error: " + (r.error || "(none)")));
+      dtd.appendChild(el("div", "jev_error: " + (r.jev_error || "(none)")));
+      dtd.appendChild(el("div", "preview: " + (r.prompt_preview || "(not enabled)")));
+      dtd.appendChild(el("div", "probabilities: " + prob));
+      detail.appendChild(dtd);
+      tb.appendChild(detail);
     }
     state.logTotal = data.total;
     $("#log-summary").textContent = `${data.total} total matching rows; showing ${data.offset + 1}-${Math.min(data.offset + data.limit, data.total)}`;
@@ -103,19 +171,74 @@ function fillTable(sel, rows, mapFn) {
 $("#spend-bucket").onchange = loadSpend;
 $("#spend-refresh").onclick = loadSpend;
 
-// --- tier mapping ---
+// --- model catalog data (shared) ---
 async function loadModels() {
   try {
     const data = await api("/api/openrouter/models");
     state.models = data.data || [];
-    const dl = $("#model-list");
-    dl.innerHTML = "";
-    for (const m of state.models) {
-      const o = el("option"); o.value = m.id; o.label = m.name || ""; dl.appendChild(o);
-    }
   } catch (e) { /* models require a valid key; ignore silently until key set */ }
+  try {
+    const d = await api("/api/models/enabled");
+    state.disabled = new Set((d && d.disabled) || []);
+  } catch (e) { /* same */ }
+  populateModelDatalist();
 }
 
+function isEnabled(slug) { return !state.disabled.has(slug); }
+
+function populateModelDatalist() {
+  const dl = $("#model-list");
+  if (!dl) return;
+  const showAll = $("#tiers-show-all") && $("#tiers-show-all").checked;
+  dl.innerHTML = "";
+  for (const m of state.models) {
+    if (!showAll && !isEnabled(m.id)) continue;
+    const o = el("option"); o.value = m.id; o.label = m.name || ""; dl.appendChild(o);
+  }
+}
+
+// --- model catalog page ---
+async function loadModelCatalog() {
+  showError("");
+  await loadModels();
+  renderModelCatalog();
+}
+function renderModelCatalog() {
+  const q = ($("#models-search").value || "").toLowerCase();
+  const onlyEnabled = $("#models-only-enabled").checked;
+  const tb = $("#models-table tbody");
+  tb.innerHTML = "";
+  let shown = 0;
+  for (const m of state.models) {
+    const enabled = isEnabled(m.id);
+    if (onlyEnabled && !enabled) continue;
+    if (q && !(m.id.toLowerCase().includes(q) || (m.name || "").toLowerCase().includes(q))) continue;
+    shown++;
+    const tr = el("tr");
+    tr.className = enabled ? "" : "row-disabled";
+    const price = m.pricing || {};
+    [m.id, m.name || "", m.context_length != null ? m.context_length : "—",
+     fmtPrice(price.prompt), fmtPrice(price.completion)].forEach((c) => tr.appendChild(el("td", c)));
+    const etd = el("td");
+    const toggle = el("button", enabled ? "enabled" : "disabled");
+    toggle.className = enabled ? "toggle on" : "toggle off";
+    toggle.onclick = async () => {
+      try {
+        await api("/api/models/enabled", { method: "PUT", body: JSON.stringify({ model_slug: m.id, enabled: !enabled }) });
+        if (enabled) state.disabled.add(m.id); else state.disabled.delete(m.id);
+        renderModelCatalog();
+        populateModelDatalist();
+      } catch (e) { showError("Toggle model: " + e.message); }
+    };
+    etd.appendChild(toggle); tr.appendChild(etd);
+    tb.appendChild(tr);
+  }
+  $("#models-summary").textContent = `${shown} of ${state.models.length} models shown`;
+}
+$("#models-search").oninput = renderModelCatalog;
+$("#models-only-enabled").onchange = renderModelCatalog;
+
+// --- tier mapping ---
 async function loadTiers() {
   showError("");
   await loadModels();
@@ -141,6 +264,7 @@ async function loadTiers() {
     }
   } catch (e) { showError("Tier mapping: " + e.message); }
 }
+$("#tiers-show-all").onchange = populateModelDatalist;
 $("#tiers-save").onclick = async () => {
   showError("");
   const tiers = {};
@@ -185,6 +309,48 @@ $("#key-create").onsubmit = async (e) => {
   } catch (e) { showError("Create key: " + e.message); }
 };
 
+// --- settings ---
+async function loadSettings() {
+  showError("");
+  try {
+    const data = await api("/api/settings");
+    state.settings = data.settings;
+    state.presets = data.presets;
+    $("#settings-preset").value = data.settings.routing_conservatism || "balanced";
+    $("#settings-gap").value = data.settings.confidence_gap_threshold;
+    $("#settings-preview-default").checked = !!data.settings.prompt_preview_default;
+  } catch (e) { showError("Settings: " + e.message); }
+}
+$("#settings-preset").onchange = () => {
+  const p = $("#settings-preset").value;
+  if (p !== "custom" && state.presets && state.presets[p] != null) {
+    $("#settings-gap").value = state.presets[p];
+  }
+};
+$("#settings-gap").oninput = () => {
+  $("#settings-preset").value = "custom";
+};
+$("#settings-form").onsubmit = async (e) => {
+  e.preventDefault();
+  showError("");
+  const preset = $("#settings-preset").value;
+  const body = { prompt_preview_default: $("#settings-preview-default").checked };
+  if (preset === "custom") {
+    body.confidence_gap_threshold = Number($("#settings-gap").value);
+  } else {
+    body.routing_conservatism = preset;
+  }
+  try {
+    const data = await api("/api/settings", { method: "PUT", body: JSON.stringify(body) });
+    state.settings = data.settings;
+    state.presets = data.presets;
+    $("#settings-status").textContent = " saved at " + new Date().toLocaleTimeString();
+    $("#settings-gap").value = data.settings.confidence_gap_threshold;
+    $("#settings-preset").value = data.settings.routing_conservatism;
+  } catch (e) { showError("Save settings: " + e.message); }
+};
+
 // --- init ---
 $("#router-key").value = state.key;
 if (state.key) loadModels();
+loadHealth();

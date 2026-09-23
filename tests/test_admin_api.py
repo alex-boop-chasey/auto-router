@@ -234,3 +234,102 @@ async def test_static_app_js_served(client: AsyncClient):
     r = await client.get("/static/app.js")
     assert r.status_code == 200
     assert "loadLog" in r.text
+
+
+# --- Phase 2.5: settings --------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_get_settings(client: AsyncClient, monkeypatch):
+    async def _fake_get_settings():
+        return {
+            "confidence_gap_threshold": 0.15,
+            "prompt_preview_default": False,
+            "routing_conservatism": "balanced",
+        }
+
+    monkeypatch.setattr(db, "get_settings", _fake_get_settings)
+    r = await client.get("/api/settings")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["settings"]["confidence_gap_threshold"] == 0.15
+    assert body["presets"]["aggressive"] < body["presets"]["conservative"]
+
+
+@pytest.mark.anyio
+async def test_put_settings_preset(client: AsyncClient, monkeypatch):
+    saved = {}
+
+    async def _fake_set_settings(updates):
+        saved["updates"] = updates
+
+    async def _fake_get_settings():
+        return {
+            "confidence_gap_threshold": 0.30,
+            "prompt_preview_default": False,
+            "routing_conservatism": "conservative",
+        }
+
+    monkeypatch.setattr(db, "set_settings", _fake_set_settings)
+    monkeypatch.setattr(db, "get_settings", _fake_get_settings)
+    r = await client.put("/api/settings", json={"routing_conservatism": "conservative"})
+    assert r.status_code == 200
+    pairs = dict(saved["updates"])
+    assert pairs["routing_conservatism"] == "conservative"
+    assert pairs["confidence_gap_threshold"] == 0.30
+
+
+@pytest.mark.anyio
+async def test_put_settings_manual_threshold_flips_custom(client: AsyncClient, monkeypatch):
+    saved = {}
+
+    async def _fake_set_settings(updates):
+        saved["updates"] = updates
+
+    async def _fake_get_settings():
+        return {
+            "confidence_gap_threshold": 0.22,
+            "prompt_preview_default": False,
+            "routing_conservatism": "custom",
+        }
+
+    monkeypatch.setattr(db, "set_settings", _fake_set_settings)
+    monkeypatch.setattr(db, "get_settings", _fake_get_settings)
+    r = await client.put("/api/settings", json={"confidence_gap_threshold": 0.22})
+    assert r.status_code == 200
+    assert dict(saved["updates"])["routing_conservatism"] == "custom"
+
+
+@pytest.mark.anyio
+async def test_put_settings_invalid_threshold(client: AsyncClient):
+    r = await client.put("/api/settings", json={"confidence_gap_threshold": 2.0})
+    assert r.status_code == 400
+
+
+# --- Phase 2.5: model enabled shortlist -----------------------------------
+
+
+@pytest.mark.anyio
+async def test_get_models_enabled(client: AsyncClient, monkeypatch):
+    async def _fake_disabled():
+        return {"openai/gpt-4o-mini", "foo/bar"}
+
+    monkeypatch.setattr(db, "get_disabled_model_slugs", _fake_disabled)
+    r = await client.get("/api/models/enabled")
+    assert r.status_code == 200
+    assert set(r.json()["disabled"]) == {"openai/gpt-4o-mini", "foo/bar"}
+
+
+@pytest.mark.anyio
+async def test_put_model_enabled(client: AsyncClient, monkeypatch):
+    captured = {}
+
+    async def _fake_set(slug, enabled):
+        captured["slug"] = slug
+        captured["enabled"] = enabled
+
+    monkeypatch.setattr(db, "set_model_enabled", _fake_set)
+    r = await client.put("/api/models/enabled", json={"model_slug": "foo/bar", "enabled": False})
+    assert r.status_code == 200
+    assert captured["slug"] == "foo/bar"
+    assert captured["enabled"] is False

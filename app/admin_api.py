@@ -12,6 +12,11 @@ from pydantic import BaseModel, Field
 from . import db
 from .config import load_tiers
 from .openrouter_admin import fetch_credits, fetch_model_catalog
+from .settings_store import (
+    CONSERVATISM_PRESETS,
+    SettingsValidationError,
+    resolve_settings_update,
+)
 from .tiers_store import TierValidationError, save_tiers
 
 router = APIRouter(prefix="/api", tags=["admin"])
@@ -112,18 +117,21 @@ async def api_list_keys() -> dict[str, Any]:
 
 class KeyCreatePayload(BaseModel):
     caller_id: str = Field(min_length=1, max_length=128)
-    prompt_preview_enabled: bool = False
+    prompt_preview_enabled: bool | None = None
     api_key: str | None = Field(default=None, min_length=8)
 
 
 @router.post("/keys", status_code=201, dependencies=[Depends(db.verify_api_key)])
 async def api_create_key(payload: KeyCreatePayload) -> dict[str, Any]:
     api_key = payload.api_key or f"sk-router-{secrets.token_urlsafe(32)}"
+    preview = payload.prompt_preview_enabled
+    if preview is None:
+        preview = (await db.get_settings())["prompt_preview_default"]
     try:
         row = await db.create_key(
             caller_id=payload.caller_id,
             api_key=api_key,
-            prompt_preview_enabled=payload.prompt_preview_enabled,
+            prompt_preview_enabled=preview,
         )
     except Exception as exc:  # unique violation on api_key
         if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
@@ -142,3 +150,47 @@ async def api_delete_key(key_id: str) -> dict[str, Any]:
     if not deleted:
         raise HTTPException(status_code=404, detail="key not found")
     return {"deleted": key_id}
+
+
+# --- Model catalog shortlist (enabled/disabled) ---------------------------
+
+
+@router.get("/models/enabled", dependencies=[Depends(db.verify_api_key)])
+async def api_models_enabled() -> dict[str, Any]:
+    """Return the model slugs explicitly disabled (everything else is enabled)."""
+    return {"disabled": sorted(await db.get_disabled_model_slugs())}
+
+
+class ModelEnabledPayload(BaseModel):
+    model_slug: str = Field(min_length=1, max_length=256)
+    enabled: bool
+
+
+@router.put("/models/enabled", dependencies=[Depends(db.verify_api_key)])
+async def api_put_model_enabled(payload: ModelEnabledPayload) -> dict[str, Any]:
+    await db.set_model_enabled(payload.model_slug, payload.enabled)
+    return {"model_slug": payload.model_slug, "enabled": payload.enabled}
+
+
+# --- Settings / config panel ----------------------------------------------
+
+
+@router.get("/settings", dependencies=[Depends(db.verify_api_key)])
+async def api_get_settings() -> dict[str, Any]:
+    return {"settings": await db.get_settings(), "presets": CONSERVATISM_PRESETS}
+
+
+class SettingsPayload(BaseModel):
+    confidence_gap_threshold: float | None = None
+    prompt_preview_default: bool | None = None
+    routing_conservatism: str | None = None
+
+
+@router.put("/settings", dependencies=[Depends(db.verify_api_key)])
+async def api_put_settings(payload: SettingsPayload) -> dict[str, Any]:
+    try:
+        updates = resolve_settings_update(payload.model_dump(exclude_none=True))
+    except SettingsValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    await db.set_settings(updates)
+    return {"settings": await db.get_settings(), "presets": CONSERVATISM_PRESETS}

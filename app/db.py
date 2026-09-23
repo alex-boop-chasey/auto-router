@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, Request
 
 from .config import SETTINGS
+from .settings_store import DEFAULT_SETTINGS, decode_setting
 
 _pool: asyncpg.Pool | None = None
 
@@ -51,13 +54,36 @@ async def init_db() -> None:
                 error TEXT,
                 prompt_preview TEXT,
                 used_fallback BOOLEAN DEFAULT FALSE,
-                jev_error TEXT
+                jev_error TEXT,
+                confidence FLOAT,
+                probability_gap FLOAT,
+                probabilities JSONB,
+                escalation_fired BOOLEAN DEFAULT FALSE
             );
 
+            -- Phase 2.5: routing-transparency columns for pre-existing databases.
+            ALTER TABLE requests ADD COLUMN IF NOT EXISTS confidence FLOAT;
+            ALTER TABLE requests ADD COLUMN IF NOT EXISTS probability_gap FLOAT;
+            ALTER TABLE requests ADD COLUMN IF NOT EXISTS probabilities JSONB;
+            ALTER TABLE requests ADD COLUMN IF NOT EXISTS escalation_fired BOOLEAN DEFAULT FALSE;
+
             CREATE INDEX IF NOT EXISTS idx_requests_timestamp ON requests(timestamp DESC);
+
+            CREATE TABLE IF NOT EXISTS enabled_models (
+                model_slug TEXT PRIMARY KEY,
+                enabled BOOLEAN DEFAULT TRUE,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
             """
         )
         await _seed_keys(conn)
+        await _seed_settings(conn)
 
 
 async def _seed_keys(conn: asyncpg.Connection) -> None:
@@ -84,6 +110,20 @@ async def _seed_keys(conn: asyncpg.Connection) -> None:
             caller_id.strip(),
             key.strip(),
             SETTINGS.prompt_preview_default,
+        )
+
+
+async def _seed_settings(conn: asyncpg.Connection) -> None:
+    """Ensure the settings table has one row per default (idempotent)."""
+    for key, value in DEFAULT_SETTINGS.items():
+        await conn.execute(
+            """
+            INSERT INTO settings (key, value)
+            VALUES ($1, $2)
+            ON CONFLICT (key) DO NOTHING
+            """,
+            key,
+            json.dumps(value),
         )
 
 
@@ -118,6 +158,10 @@ async def log_request(
     prompt_preview: str | None = None,
     used_fallback: bool = False,
     jev_error: str | None = None,
+    confidence: float | None = None,
+    probability_gap: float | None = None,
+    probabilities: dict[str, float] | None = None,
+    escalation_fired: bool = False,
 ) -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -125,9 +169,10 @@ async def log_request(
             """
             INSERT INTO requests (
                 caller_id, tier, model, input_tokens, output_tokens, cost_usd,
-                latency_ms, success, error, prompt_preview, used_fallback, jev_error
+                latency_ms, success, error, prompt_preview, used_fallback, jev_error,
+                confidence, probability_gap, probabilities, escalation_fired
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16)
             RETURNING id
             """,
             caller_id,
@@ -142,6 +187,10 @@ async def log_request(
             prompt_preview,
             used_fallback,
             jev_error,
+            confidence,
+            probability_gap,
+            json.dumps(probabilities) if probabilities is not None else None,
+            escalation_fired,
         )
         return int(row["id"])
 
@@ -153,7 +202,8 @@ async def get_recent_requests(limit: int = 20) -> list[dict[str, Any]]:
             """
             SELECT id, timestamp, caller_id, tier, model, input_tokens,
                    output_tokens, cost_usd, latency_ms, success, error,
-                   prompt_preview, used_fallback, jev_error
+                   prompt_preview, used_fallback, jev_error,
+                   confidence, probability_gap, probabilities, escalation_fired
             FROM requests
             ORDER BY timestamp DESC
             LIMIT $1
@@ -165,7 +215,8 @@ async def get_recent_requests(limit: int = 20) -> list[dict[str, Any]]:
 
 _REQUEST_COLUMNS = (
     "id, timestamp, caller_id, tier, model, input_tokens, output_tokens, "
-    "cost_usd, latency_ms, success, error, prompt_preview, used_fallback, jev_error"
+    "cost_usd, latency_ms, success, error, prompt_preview, used_fallback, jev_error, "
+    "confidence, probability_gap, probabilities, escalation_fired"
 )
 
 
@@ -200,11 +251,19 @@ def _build_filters(
 
 
 def _coerce_cost(row: dict[str, Any]) -> dict[str, Any]:
-    """asyncpg returns NUMERIC as Decimal, which pydantic v2 serialises to a
-    string. Coerce cost fields to float so API consumers get real numbers."""
+    """asyncpg returns NUMERIC as Decimal (pydantic v2 serialises to a string)
+    and JSONB as a string. Coerce cost fields to float and `probabilities` back
+    to a dict so API consumers get real values."""
     for key in ("cost_usd", "cost"):
         if row.get(key) is not None:
             row[key] = float(row[key])
+    if row.get("probabilities") is not None:
+        raw = row["probabilities"]
+        if isinstance(raw, str):
+            try:
+                row["probabilities"] = json.loads(raw)
+            except json.JSONDecodeError:
+                row["probabilities"] = None
     return row
 
 
@@ -352,3 +411,104 @@ async def delete_key(key_id: str) -> bool:
     async with pool.acquire() as conn:
         row = await conn.fetchrow("DELETE FROM keys WHERE id = $1 RETURNING id", key_id)
     return row is not None
+
+
+# --- Settings -------------------------------------------------------------
+
+
+async def get_settings() -> dict[str, Any]:
+    """Return the merged settings (defaults overlaid with any DB rows)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT key, value FROM settings")
+    merged = dict(DEFAULT_SETTINGS)
+    for r in rows:
+        key = r["key"]
+        raw = r["value"]
+        try:
+            val = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            val = raw
+        merged[key] = decode_setting(key, val)
+    return merged
+
+
+async def set_setting(key: str, value: Any) -> None:
+    """Upsert a single setting. Value is JSON-encoded for storage."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO settings (key, value, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (key) DO UPDATE
+                SET value = EXCLUDED.value, updated_at = NOW()
+            """,
+            key,
+            json.dumps(value),
+        )
+
+
+async def set_settings(updates: list[tuple[str, Any]]) -> None:
+    """Apply multiple settings atomically."""
+    if not updates:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        for key, value in updates:
+            await conn.execute(
+                """
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (key) DO UPDATE
+                    SET value = EXCLUDED.value, updated_at = NOW()
+                """,
+                key,
+                json.dumps(value),
+            )
+
+
+# --- Model catalog (enabled/disabled shortlist) ---------------------------
+
+
+async def get_disabled_model_slugs() -> set[str]:
+    """Return the set of model slugs explicitly disabled (blacklist)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT model_slug FROM enabled_models WHERE enabled = FALSE"
+        )
+    return {r["model_slug"] for r in rows}
+
+
+async def set_model_enabled(model_slug: str, enabled: bool) -> None:
+    """Upsert a model's enabled state. A model with no row is treated enabled."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO enabled_models (model_slug, enabled, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (model_slug) DO UPDATE
+                SET enabled = EXCLUDED.enabled, updated_at = NOW()
+            """,
+            model_slug,
+            enabled,
+        )
+
+
+# --- Health ---------------------------------------------------------------
+
+
+async def last_successful_decision_at() -> datetime | None:
+    """Timestamp of the most recent request where the Jev decision layer
+    answered successfully (success AND NOT used_fallback)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            """
+            SELECT MAX(timestamp)
+            FROM requests
+            WHERE success = TRUE AND used_fallback = FALSE
+            """
+        )

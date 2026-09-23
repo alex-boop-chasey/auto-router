@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
@@ -11,7 +12,13 @@ from pydantic import BaseModel, Field
 
 from . import admin_api
 from .config import PROJECT_ROOT, SETTINGS, load_tiers, tier_to_model
-from .db import init_db, log_request, verify_api_key
+from .db import (
+    get_settings,
+    init_db,
+    last_successful_decision_at,
+    log_request,
+    verify_api_key,
+)
 from .decision import classify_tier
 from .fallback import flatten_messages
 from .proxy import non_stream_completion, stream_completion
@@ -54,8 +61,16 @@ app = create_app()
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, Any]:
+    last_at: datetime | None = None
+    try:
+        last_at = await last_successful_decision_at()
+    except Exception:  # noqa: BLE001 — health must degrade gracefully if the DB is unreachable
+        last_at = None
+    return {
+        "status": "ok",
+        "last_successful_decision_at": last_at.isoformat() if last_at else None,
+    }
 
 
 @router.get("/", include_in_schema=False)
@@ -104,7 +119,13 @@ async def chat_completions(
         preview = prompt_text[: SETTINGS.prompt_preview_length]
 
     start_ns = _time_ns()
-    tier, used_fallback, jev_error = await classify_tier(prompt_text)
+    settings = await get_settings()
+    decision = await classify_tier(
+        prompt_text, confidence_gap=settings["confidence_gap_threshold"]
+    )
+    tier = decision.tier
+    used_fallback = decision.used_fallback
+    jev_error = decision.jev_error
     model = tier_to_model(tier)
 
     if req.stream:
@@ -117,6 +138,10 @@ async def chat_completions(
                 preview=preview,
                 used_fallback=used_fallback,
                 jev_error=jev_error,
+                confidence=decision.confidence,
+                probability_gap=decision.probability_gap,
+                probabilities=decision.probabilities,
+                escalation_fired=decision.escalation_fired,
                 started_ns=start_ns,
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
@@ -156,6 +181,10 @@ async def chat_completions(
             preview=preview,
             used_fallback=used_fallback,
             jev_error=jev_error,
+            confidence=decision.confidence,
+            probability_gap=decision.probability_gap,
+            probabilities=decision.probabilities,
+            escalation_fired=decision.escalation_fired,
         )
         raise HTTPException(status_code=502, detail=error_msg)
 
@@ -172,6 +201,10 @@ async def chat_completions(
         preview=preview,
         used_fallback=used_fallback,
         jev_error=jev_error,
+        confidence=decision.confidence,
+        probability_gap=decision.probability_gap,
+        probabilities=decision.probabilities,
+        escalation_fired=decision.escalation_fired,
     )
     return JSONResponse(content=result)
 
@@ -185,6 +218,10 @@ async def _streamed_response(
     preview: str | None,
     used_fallback: bool,
     jev_error: str | None,
+    confidence: float | None,
+    probability_gap: float | None,
+    probabilities: dict[str, float] | None,
+    escalation_fired: bool,
     started_ns: int,
     temperature: float | None,
     max_tokens: int | None,
@@ -221,6 +258,10 @@ async def _streamed_response(
             preview=preview,
             used_fallback=used_fallback,
             jev_error=jev_error,
+            confidence=confidence,
+            probability_gap=probability_gap,
+            probabilities=probabilities,
+            escalation_fired=escalation_fired,
         )
         return
 
@@ -235,6 +276,10 @@ async def _streamed_response(
         preview=preview,
         used_fallback=used_fallback,
         jev_error=jev_error,
+        confidence=confidence,
+        probability_gap=probability_gap,
+        probabilities=probabilities,
+        escalation_fired=escalation_fired,
     )
 
 
@@ -250,6 +295,10 @@ async def _persist_log(
     preview: str | None,
     used_fallback: bool,
     jev_error: str | None,
+    confidence: float | None = None,
+    probability_gap: float | None = None,
+    probabilities: dict[str, float] | None = None,
+    escalation_fired: bool = False,
 ) -> None:
     await log_request(
         caller_id=caller_id,
@@ -264,6 +313,10 @@ async def _persist_log(
         prompt_preview=preview,
         used_fallback=used_fallback,
         jev_error=jev_error,
+        confidence=confidence,
+        probability_gap=probability_gap,
+        probabilities=probabilities,
+        escalation_fired=escalation_fired,
     )
 
 

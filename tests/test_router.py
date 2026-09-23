@@ -18,7 +18,7 @@ os.environ.setdefault("POSTGRES_USER", "postgres")
 os.environ.setdefault("POSTGRES_PASSWORD", "postgres")
 
 from app.config import load_tiers, tier_to_model
-from app.decision import TierClassifier
+from app.decision import Decision, TierClassifier
 from app.fallback import fallback_classify, flatten_messages
 from app.main import create_app
 
@@ -75,6 +75,54 @@ def test_confidence_resolution(probs, expected):
     assert TierClassifier._resolve_with_confidence(probs, choice) == expected
 
 
+@pytest.mark.anyio
+async def test_classify_populates_transparency_metadata(monkeypatch):
+    from app import decision
+
+    class FakeResp:
+        status_code = 200
+
+        @property
+        def text(self) -> str:
+            return ""
+
+        def json(self) -> dict:
+            return {
+                "answers": {
+                    "tier": {
+                        "choice": "simple",
+                        "probabilities": {"simple": 0.48, "medium": 0.42, "complex": 0.10},
+                    }
+                }
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return FakeResp()
+
+    monkeypatch.setattr(decision.httpx, "AsyncClient", FakeClient)
+
+    result = await decision.TierClassifier(confidence_gap=0.15).classify("hello")
+
+    assert result.used_fallback is False
+    # gap 0.48-0.42 = 0.06 < 0.15 -> escalate simple -> medium.
+    assert result.tier == "medium"
+    assert result.confidence == pytest.approx(0.48)
+    assert result.probability_gap == pytest.approx(0.06)
+    assert result.escalation_fired is True
+    assert result.probabilities["simple"] == pytest.approx(0.48)
+    assert result.jev_error is None
+
+
 def test_fallback_classifier():
     assert fallback_classify("what is 2+2") == "simple"
     assert (
@@ -103,8 +151,19 @@ async def test_chat_completions_non_stream_shape(client: AsyncClient, monkeypatc
 
     captured = {}
 
-    async def _fake_classify(prompt):
-        return "simple", False, None
+    async def _fake_classify(prompt, confidence_gap=None):
+        return Decision(
+            tier="simple",
+            used_fallback=False,
+            jev_error=None,
+            confidence=0.8,
+            probability_gap=0.7,
+            probabilities={"simple": 0.8, "medium": 0.1, "complex": 0.1},
+            escalation_fired=False,
+        )
+
+    async def _fake_get_settings():
+        return {"confidence_gap_threshold": 0.15}
 
     async def _fake_non_stream(*, model, messages, **kwargs):
         return {
@@ -127,6 +186,7 @@ async def test_chat_completions_non_stream_shape(client: AsyncClient, monkeypatc
         return 1
 
     monkeypatch.setattr(main, "classify_tier", _fake_classify)
+    monkeypatch.setattr(main, "get_settings", _fake_get_settings)
     monkeypatch.setattr(main, "non_stream_completion", _fake_non_stream)
     monkeypatch.setattr(main, "log_request", _fake_log)
 
@@ -143,6 +203,10 @@ async def test_chat_completions_non_stream_shape(client: AsyncClient, monkeypatc
     assert captured["log"]["cost_usd"] == 0.000005
     assert captured["log"]["success"] is True
     assert captured["log"]["used_fallback"] is False
+    assert captured["log"]["confidence"] == 0.8
+    assert captured["log"]["probability_gap"] == 0.7
+    assert captured["log"]["probabilities"]["simple"] == 0.8
+    assert captured["log"]["escalation_fired"] is False
 
 
 @pytest.mark.anyio
@@ -151,8 +215,19 @@ async def test_chat_completions_stream_shape(client: AsyncClient, monkeypatch):
 
     captured = {}
 
-    async def _fake_classify(prompt):
-        return "complex", True, "forced fallback"
+    async def _fake_classify(prompt, confidence_gap=None):
+        return Decision(
+            tier="complex",
+            used_fallback=True,
+            jev_error="forced fallback",
+            confidence=None,
+            probability_gap=None,
+            probabilities=None,
+            escalation_fired=False,
+        )
+
+    async def _fake_get_settings():
+        return {"confidence_gap_threshold": 0.15}
 
     async def _fake_stream(*, model, messages, **kwargs):
         chunk = {
@@ -169,6 +244,7 @@ async def test_chat_completions_stream_shape(client: AsyncClient, monkeypatch):
         return 1
 
     monkeypatch.setattr(main, "classify_tier", _fake_classify)
+    monkeypatch.setattr(main, "get_settings", _fake_get_settings)
     monkeypatch.setattr(main, "stream_completion", _fake_stream)
     monkeypatch.setattr(main, "log_request", _fake_log)
 

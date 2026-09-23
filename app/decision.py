@@ -2,11 +2,33 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from .config import SETTINGS
+
+TIER_ORDER = {"simple": 0, "medium": 1, "complex": 2}
+
+
+@dataclass
+class Decision:
+    """Result of a single classification pass.
+
+    ``confidence`` is the top-tier probability Jev assigned; ``probability_gap``
+    is top minus second. ``escalation_fired`` records whether the
+    confidence-gap escalation rule (gap < threshold) changed the chosen tier.
+    On fallback all three are ``None`` / ``False``.
+    """
+
+    tier: str
+    used_fallback: bool
+    jev_error: str | None
+    confidence: float | None = None
+    probability_gap: float | None = None
+    probabilities: dict[str, float] | None = None
+    escalation_fired: bool = False
 
 
 def _normalise(prompt: str) -> str:
@@ -70,19 +92,24 @@ def flatten_messages(messages: list[dict[str, Any]]) -> str:
 class TierClassifier:
     """Jev/OpenRouter Decisions integration with fallback."""
 
-    def __init__(self) -> None:
+    def __init__(self, confidence_gap: float | None = None) -> None:
         self.url = SETTINGS.jev_url
         self.model = SETTINGS.jev_model
-        self.confidence_gap = SETTINGS.jev_confidence_gap
+        self.confidence_gap = (
+            confidence_gap
+            if confidence_gap is not None
+            else SETTINGS.jev_confidence_gap
+        )
         self.timeout = 10.0
 
     @staticmethod
-    def _resolve_with_confidence(probabilities: dict[str, float], choice: str) -> str:
+    def _resolve_with_confidence(
+        probabilities: dict[str, float], choice: str, confidence_gap: float = 0.15
+    ) -> str:
         """Apply the Phase 1 confidence-gap escalation rule."""
-        tiers_order = {"simple": 0, "medium": 1, "complex": 2}
         sorted_probs = sorted(
             probabilities.items(),
-            key=lambda kv: (-kv[1], -tiers_order.get(kv[0], 0)),
+            key=lambda kv: (-kv[1], -TIER_ORDER.get(kv[0], 0)),
         )
         if len(sorted_probs) < 2:
             return sorted_probs[0][0] if sorted_probs else "medium"
@@ -91,16 +118,16 @@ class TierClassifier:
         second_tier, second_prob = sorted_probs[1]
 
         gap = top_prob - second_prob
-        if gap < SETTINGS.jev_confidence_gap:
+        if gap < confidence_gap:
             return (
                 top_tier
-                if tiers_order[top_tier] > tiers_order[second_tier]
+                if TIER_ORDER[top_tier] > TIER_ORDER[second_tier]
                 else second_tier
             )
         return top_tier
 
-    async def classify(self, prompt: str) -> tuple[str, bool, str | None]:
-        """Return (tier, used_fallback, jev_error_message)."""
+    async def classify(self, prompt: str) -> Decision:
+        """Return a Decision with routing-transparency metadata."""
         payload = {
             "model": self.model,
             "questions": {
@@ -160,13 +187,42 @@ class TierClassifier:
                                     **probabilities,
                                 }
                             if choice in {"simple", "medium", "complex"}:
-                                return self._resolve_with_confidence(probabilities, choice), False, None
+                                tier = self._resolve_with_confidence(
+                                    probabilities, choice, self.confidence_gap
+                                )
+                                sorted_probs = sorted(
+                                    probabilities.items(),
+                                    key=lambda kv: (-kv[1], -TIER_ORDER.get(kv[0], 0)),
+                                )
+                                _top_tier, top_prob = sorted_probs[0]
+                                second_prob = (
+                                    sorted_probs[1][1] if len(sorted_probs) > 1 else top_prob
+                                )
+                                gap = top_prob - second_prob
+                                escalation_fired = (
+                                    len(sorted_probs) > 1 and gap < self.confidence_gap
+                                )
+                                return Decision(
+                                    tier=tier,
+                                    used_fallback=False,
+                                    jev_error=None,
+                                    confidence=top_prob,
+                                    probability_gap=gap,
+                                    probabilities=probabilities,
+                                    escalation_fired=escalation_fired,
+                                )
                             jev_error = f"Unexpected tier choice: {choice}"
                         except KeyError as exc:
                             jev_error = f"Missing field: {exc}"
 
-        return fallback_classify(prompt), True, jev_error
+        return Decision(
+            tier=fallback_classify(prompt),
+            used_fallback=True,
+            jev_error=jev_error,
+        )
 
 
-async def classify_tier(prompt: str) -> tuple[str, bool, str | None]:
-    return await TierClassifier().classify(prompt)
+async def classify_tier(
+    prompt: str, confidence_gap: float | None = None
+) -> Decision:
+    return await TierClassifier(confidence_gap=confidence_gap).classify(prompt)
