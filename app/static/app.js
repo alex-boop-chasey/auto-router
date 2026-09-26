@@ -253,73 +253,105 @@ function fillTable(sel, labels, rows, mapFn) {
 $("#spend-bucket").onchange = loadSpend;
 $("#spend-refresh").onclick = loadSpend;
 
-// --- model catalog data (shared) ---
-async function loadModels() {
-  try {
-    const data = await api("/api/openrouter/models");
-    state.models = data.data || [];
-  } catch (e) { /* models require a valid key; ignore silently until key set */ }
-  try {
-    const d = await api("/api/models/enabled");
-    state.disabled = new Set((d && d.disabled) || []);
-  } catch (e) { /* same */ }
-  populateModelDatalist();
-}
-
-function isEnabled(slug) { return !state.disabled.has(slug); }
-
-function populateModelDatalist() {
-  const dl = $("#model-list");
-  if (!dl) return;
-  const showAll = $("#tiers-show-all") && $("#tiers-show-all").checked;
-  dl.innerHTML = "";
-  for (const m of state.models) {
-    if (!showAll && !isEnabled(m.id)) continue;
-    const o = el("option"); o.value = m.id; o.label = m.name || ""; dl.appendChild(o);
-  }
-}
-
-// --- model catalog page ---
+// --- model catalog v2 (full CRUD) ---
 async function loadModelCatalog() {
-  showError("");
-  await loadModels();
-  renderModelCatalog();
+  $("models-error").style.display = "none";
+  try {
+    const data = await api("/api/models");
+    state.models = data.data || [];
+  } catch (e) { state.models = []; showModelsError("Load failed: " + e.message); }
+  renderModelTable();
 }
-function renderModelCatalog() {
-  const q = ($("#models-search").value || "").toLowerCase();
-  const onlyEnabled = $("#models-only-enabled").checked;
-  const tb = $("#models-table tbody");
+function showModelsError(msg) {
+  const box = $("models-error");
+  box.style.display = msg ? "block" : "none";
+  box.textContent = msg;
+}
+function renderModelTable() {
+  const tb = $("models-table tbody");
   tb.innerHTML = "";
-  let shown = 0;
   for (const m of state.models) {
-    const enabled = isEnabled(m.id);
-    if (onlyEnabled && !enabled) continue;
-    if (q && !(m.id.toLowerCase().includes(q) || (m.name || "").toLowerCase().includes(q))) continue;
-    shown++;
     const tr = el("tr");
-    tr.className = enabled ? "" : "row-disabled";
-    const price = m.pricing || {};
-    const labels = ["model", "name", "context", "prompt", "completion"];
-    [m.id, m.name || "", m.context_length != null ? m.context_length : "—",
-     fmtPrice(price.prompt), fmtPrice(price.completion)].forEach((c, i) => tr.appendChild(cell(labels[i], c)));
-    const etd = cell("enabled");
-    const toggle = el("button", enabled ? "enabled" : "disabled");
-    toggle.className = enabled ? "toggle on" : "toggle off";
+    tr.className = m.enabled ? "" : "row-disabled";
+    const costIn = m.cost_input_per_1m != null ? "$" + Number(m.cost_input_per_1m).toFixed(2) : "—";
+    const costOut = m.cost_output_per_1m != null ? "$" + Number(m.cost_output_per_1m).toFixed(2) : "—";
+    [m.display_name, m.openrouter_model_id, m.context_length != null ? m.context_length.toLocaleString() : "—",
+     costIn + " / " + costOut].forEach((c, i) => {
+      const td = el("td"); td.textContent = c; tr.appendChild(td);
+    });
+    // Fallback badge
+    const fbTd = el("td");
+    const fb = el("span", m.is_fallback_default ? "fallback" : "—");
+    fb.className = m.is_fallback_default ? "badge normal" : "";
+    fbTd.appendChild(fb); tr.appendChild(fbTd);
+    // Enabled toggle
+    const enTd = el("td");
+    const toggle = el("button", m.enabled ? "enabled" : "disabled");
+    toggle.className = m.enabled ? "toggle on" : "toggle off";
     toggle.onclick = async () => {
       try {
-        await api("/api/models/enabled", { method: "PUT", body: JSON.stringify({ model_slug: m.id, enabled: !enabled }) });
-        if (enabled) state.disabled.add(m.id); else state.disabled.delete(m.id);
-        renderModelCatalog();
-        populateModelDatalist();
-      } catch (e) { showError("Toggle model: " + e.message); }
+        await api("/api/models/" + m.id, { method: "PUT", body: JSON.stringify({ enabled: !m.enabled }) });
+        await loadModelCatalog();
+      } catch (e) { showModelsError("Toggle: " + e.message); }
     };
-    etd.appendChild(toggle); tr.appendChild(etd);
+    enTd.appendChild(toggle); tr.appendChild(enTd);
+    // Edit button
+    const actTd = el("td");
+    const editBtn = el("button", "edit");
+    editBtn.className = "btn btn-ghost";
+    editBtn.onclick = () => openModelForm(m);
+    actTd.appendChild(editBtn); tr.appendChild(actTd);
     tb.appendChild(tr);
   }
-  $("#models-summary").textContent = `${shown} of ${state.models.length} models shown`;
 }
-$("#models-search").oninput = renderModelCatalog;
-$("#models-only-enabled").onchange = renderModelCatalog;
+$("models-add-btn").onclick = () => openModelForm(null);
+$("models-form-cancel").onclick = () => { $("models-form-card").style.display = "none"; };
+$("models-form").onsubmit = async () => {
+  const id = $("models-form-id").value;
+  const body = {
+    display_name: $("models-form-name").value.trim(),
+    openrouter_model_id: $("models-form-slug").value.trim(),
+    context_length: parseInt($("models-form-ctx").value),
+    description: $("models-form-desc").value.trim(),
+    cost_input_per_1m: $("models-form-cost-in").value ? parseFloat($("models-form-cost-in").value) : null,
+    cost_output_per_1m: $("models-form-cost-out").value ? parseFloat($("models-form-cost-out").value) : null,
+  };
+  const status = $("models-form-status");
+  status.textContent = "Saving...";
+  try {
+    if (id) { await api("/api/models/" + id, { method: "PUT", body: JSON.stringify(body) }); }
+    else { await api("/api/models", { method: "POST", body: JSON.stringify(body) }); }
+    status.textContent = "Saved";
+    $("models-form-card").style.display = "none";
+    await loadModelCatalog();
+  } catch (e) { status.textContent = ""; showModelsError("Save: " + e.message); }
+};
+function openModelForm(model) {
+  $("models-form-card").style.display = "block";
+  $("models-error").style.display = "none";
+  if (model) {
+    $("models-form-title").textContent = "Edit Model";
+    $("models-form-id").value = model.id;
+    $("models-form-name").value = model.display_name || "";
+    $("models-form-slug").value = model.openrouter_model_id || "";
+    $("models-form-ctx").value = model.context_length || "";
+    $("models-form-desc").value = model.description || "";
+    $("models-form-cost-in").value = model.cost_input_per_1m != null ? model.cost_input_per_1m : "";
+    $("models-form-cost-out").value = model.cost_output_per_1m != null ? model.cost_output_per_1m : "";
+  } else {
+    $("models-form-title").textContent = "Add Model";
+    $("models-form-id").value = "";
+    $("models-form-name").value = "";
+    $("models-form-slug").value = "";
+    $("models-form-ctx").value = "";
+    $("models-form-desc").value = "";
+    $("models-form-cost-in").value = "";
+    $("models-form-cost-out").value = "";
+  }
+  $("models-form-status").textContent = "";
+  $("models-form-name").focus();
+}
+
 
 // --- tier mapping ---
 async function loadTiers() {

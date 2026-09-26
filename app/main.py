@@ -27,6 +27,8 @@ from .cache import init_cache, set_cached
 from .cache import make_and_check_cache as check_cache
 from .config import PROJECT_ROOT, SETTINGS, load_tiers, tier_to_model
 from .db import (
+    get_enabled_models_for_routing,
+    get_fallback_model,
     get_settings,
     init_db,
     last_successful_decision_at,
@@ -118,18 +120,21 @@ async def ui_index() -> FileResponse:
 
 @router.get("/v1/models", dependencies=[Depends(verify_api_key)])
 async def list_models() -> dict[str, Any]:
-    tiers = load_tiers()
-    data = []
-    for tier, cfg in tiers.items():
-        data.append(
-            {
-                "id": cfg["model"],
-                "object": "model",
-                "owned_by": "auto-router",
-                "context_length": cfg["context_length"],
-                "tier": tier,
-            }
-        )
+    try:
+        rows = await get_enabled_models_for_routing()
+    except Exception:
+        # Fall back to tiers.json if the models table doesn't exist yet
+        tiers = load_tiers()
+        rows = [{"openrouter_model_id": cfg["model"], "context_length": cfg["context_length"]} for cfg in tiers.values()]
+    data = [
+        {
+            "id": row["openrouter_model_id"],
+            "object": "model",
+            "owned_by": "auto-router",
+            "context_length": row.get("context_length", 128000),
+        }
+        for row in rows
+    ]
     return {"object": "list", "data": data}
 
 
@@ -219,13 +224,28 @@ async def chat_completions(
             except Exception:
                 clean_meta["compaction_error"] = True
 
+    # --- Load models for Jev classification (DB-driven, not tiers.json) ---
+    enabled_models = await get_enabled_models_for_routing()
+    if not enabled_models:
+        raise HTTPException(status_code=503, detail="No enabled models configured")
+
+    choices: dict[str, str] = {
+        m["openrouter_model_id"]: m["description"] or m["display_name"]
+        for m in enabled_models
+    }
+    fallback_row = await get_fallback_model()
+    fallback_model_id = fallback_row["openrouter_model_id"] if fallback_row else "openai/gpt-4o-mini"
+
     decision = await classify_tier(
-        prompt_text, confidence_gap=settings["confidence_gap_threshold"]
+        prompt_text,
+        confidence_gap=settings["confidence_gap_threshold"],
+        choices=choices,
+        fallback_model_id=fallback_model_id,
     )
-    tier = decision.tier
+    tier = decision.tier  # in dynamic mode, tier IS the model_id
     used_fallback = decision.used_fallback
     jev_error = decision.jev_error
-    model = tier_to_model(tier)
+    model = decision.tier  # model_id directly from Jev choice
 
     # Structured JSON log of the Jev decision
     logger.jev_decision(

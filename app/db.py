@@ -97,10 +97,25 @@ async def init_db() -> None:
                 value TEXT NOT NULL,
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             );
+
+            -- Phase 2.5a: full model catalog replacing fixed tiers.json routing.
+            CREATE TABLE IF NOT EXISTS models (
+                id                  SERIAL PRIMARY KEY,
+                display_name        TEXT NOT NULL,
+                openrouter_model_id TEXT NOT NULL UNIQUE,
+                cost_input_per_1m   NUMERIC(12, 6),
+                cost_output_per_1m  NUMERIC(12, 6),
+                context_length       INTEGER NOT NULL,
+                description          TEXT NOT NULL DEFAULT '',
+                is_fallback_default  BOOLEAN NOT NULL DEFAULT FALSE,
+                enabled              BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
             """
         )
         await _seed_keys(conn)
         await _seed_settings(conn)
+        await _seed_models(conn)
         await ensure_budget_columns(pool)
 
 
@@ -144,6 +159,42 @@ async def _seed_settings(conn: asyncpg.Connection) -> None:
             json.dumps(value),
         )
 
+
+async def _seed_models(conn: asyncpg.Connection) -> None:
+    """Seed models table from tiers.json on first run (idempotent)."""
+    from .config import load_tiers
+
+    tiers = load_tiers()
+    models_to_seed = [
+        ("openai/gpt-4o-mini", "openai/gpt-4o-mini", 128000,
+         "Fast, cheap model for simple greetings, trivia, and low-stakes tasks. Lowest cost per token."),
+        ("anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4", 200000,
+         "Mid-to-high tier model for coding, reasoning, and multi-step tasks. Good balance of capability and cost."),
+        ("anthropic/claude-sonnet-4-complex", "anthropic/claude-sonnet-4", 200000,
+         "Frontier-tier routing target for hard reasoning, long context, or high-stakes tasks requiring maximum capability."),
+        ("openai/gpt-4.1", "openai/gpt-4.1", 1000000,
+         "Very large context window model for document-heavy tasks."),
+    ]
+
+    for display_name, model_id, ctx_len, desc in models_to_seed:
+        await conn.execute(
+            """
+            INSERT INTO models (display_name, openrouter_model_id, context_length, description)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (openrouter_model_id) DO NOTHING
+            """,
+            display_name, model_id, ctx_len, desc,
+        )
+
+    # Mark the first Claude row as the fallback default (only if none exists yet)
+    existing = await conn.fetchval(
+        "SELECT id FROM models WHERE is_fallback_default = TRUE LIMIT 1"
+    )
+    if existing is None:
+        await conn.execute(
+            "UPDATE models SET is_fallback_default = TRUE WHERE openrouter_model_id = $1",
+            "anthropic/claude-sonnet-4",
+        )
 
 async def verify_api_key(request: Request) -> tuple[str, bool]:
     auth = request.headers.get("authorization", "")
@@ -529,7 +580,135 @@ async def set_model_enabled(model_slug: str, enabled: bool) -> None:
         )
 
 
-# --- Health ---------------------------------------------------------------
+# --- Model catalog v2 (full CRUD on models table) -------------------------
+
+
+async def list_models() -> list[dict]:
+    """Return all model rows, ordered by display_name."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM models ORDER BY display_name")
+    return [dict(r) for r in rows]
+
+
+async def get_enabled_models_for_routing() -> list[dict]:
+    """Return enabled model rows for Jev classification."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM models WHERE enabled = TRUE ORDER BY display_name"
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_fallback_model() -> dict | None:
+    """Return the row with is_fallback_default = TRUE."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM models WHERE is_fallback_default = TRUE AND enabled = TRUE LIMIT 1"
+        )
+    return dict(row) if row else None
+
+
+class ModelValidationError(ValueError):
+    """Raised for invalid model CRUD operations."""
+    pass
+
+
+async def create_model(*, display_name: str, openrouter_model_id: str,
+                       context_length: int, description: str = "",
+                       cost_input_per_1m: float | None = None,
+                       cost_output_per_1m: float | None = None) -> dict:
+    """Insert a new model row."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            row = await conn.fetchrow(
+                "INSERT INTO models (display_name, openrouter_model_id, context_length, description, cost_input_per_1m, cost_output_per_1m) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *",
+                display_name, openrouter_model_id, context_length, description, cost_input_per_1m, cost_output_per_1m,
+            )
+        except asyncpg.UniqueViolationError:
+            raise ModelValidationError(f"Model {openrouter_model_id!r} already exists")
+    return dict(row)
+
+
+async def update_model(*, model_id: int, display_name: str | None = None,
+                       openrouter_model_id: str | None = None,
+                       context_length: int | None = None,
+                       description: str | None = None,
+                       cost_input_per_1m: float | None = None,
+                       cost_output_per_1m: float | None = None,
+                       is_fallback_default: bool | None = None,
+                       enabled: bool | None = None) -> dict:
+    """Update fields on a model row. Returns empty dict if not found."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        sets = []
+        values = []
+        i = 1
+        for col, val in [
+            ("display_name", display_name), ("openrouter_model_id", openrouter_model_id),
+            ("context_length", context_length), ("description", description),
+            ("cost_input_per_1m", cost_input_per_1m), ("cost_output_per_1m", cost_output_per_1m),
+            ("is_fallback_default", is_fallback_default), ("enabled", enabled),
+        ]:
+            if val is not None:
+                sets.append(f"{col}=${i}")
+                values.append(val)
+                i += 1
+        if not sets:
+            row = await conn.fetchrow("SELECT * FROM models WHERE id=$1", model_id)
+            return dict(row) if row else {}
+        values.append(model_id)
+        query = f"UPDATE models SET {', '.join(sets)} WHERE id=${i} RETURNING *"
+        try:
+            row = await conn.fetchrow(query, *values)
+        except asyncpg.UniqueViolationError:
+            raise ModelValidationError(f"Model {openrouter_model_id!r} already exists")
+        return dict(row) if row else {}
+
+
+async def get_model_by_id(model_id: int) -> dict | None:
+    """Return a single model by id."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM models WHERE id=$1", model_id)
+    return dict(row) if row else None
+
+
+async def disable_model(model_id: int) -> bool:
+    """Soft-delete: set enabled=FALSE. Returns True if updated."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM models WHERE id=$1", model_id)
+        if not row:
+            return False
+        if row["is_fallback_default"]:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM models WHERE is_fallback_default=TRUE AND id!=$1", model_id
+            )
+            if count == 0:
+                raise ModelValidationError(
+                    "Cannot disable the only fallback default model. Set another model as fallback default first."
+                )
+        result = await conn.execute("UPDATE models SET enabled=FALSE WHERE id=$1", model_id)
+        return result == "UPDATE 1"
+
+
+async def set_fallback_default(model_id: int) -> dict:
+    """Make model_id the sole fallback default."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE models SET is_fallback_default=FALSE")
+        row = await conn.fetchrow(
+            "UPDATE models SET is_fallback_default=TRUE, enabled=TRUE WHERE id=$1 RETURNING *", model_id
+        )
+        if not row:
+            raise ModelValidationError(f"Model id={model_id} not found")
+    return dict(row)
+
+
 
 
 async def last_successful_decision_at() -> datetime | None:

@@ -172,6 +172,99 @@ async def api_put_model_enabled(payload: ModelEnabledPayload) -> dict[str, Any]:
     return {"model_slug": payload.model_slug, "enabled": payload.enabled}
 
 
+# --- Model catalog v2 (full CRUD on models table) -------------------------
+
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class ModelCreatePayload(PydanticBaseModel):
+    display_name: str = Field(min_length=1, max_length=256)
+    openrouter_model_id: str = Field(min_length=1, max_length=512)
+    context_length: int = Field(gt=0)
+    description: str = Field(default="")
+    cost_input_per_1m: float | None = None
+    cost_output_per_1m: float | None = None
+
+
+class ModelUpdatePayload(PydanticBaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=256)
+    openrouter_model_id: str | None = Field(default=None, min_length=1, max_length=512)
+    context_length: int | None = Field(default=None, gt=0)
+    description: str | None = None
+    cost_input_per_1m: float | None = None
+    cost_output_per_1m: float | None = None
+    is_fallback_default: bool | None = None
+    enabled: bool | None = None
+
+
+@router.get("/models", dependencies=[Depends(db.verify_api_key)])
+async def api_list_models() -> dict[str, Any]:
+    rows = await db.list_models()
+    return {"data": rows}
+
+
+@router.post("/models", status_code=201, dependencies=[Depends(db.verify_api_key)])
+async def api_create_model(payload: ModelCreatePayload) -> dict[str, Any]:
+    # Validate the openrouter_model_id exists on OpenRouter
+    # (skip validation if key not configured — graceful degredation)
+    from .config import SETTINGS as _SETTINGS
+    if _SETTINGS.openrouter_api_key:
+        try:
+            models = await fetch_model_catalog()
+            valid_ids = {m["id"] for m in models if m.get("id")}
+            if payload.openrouter_model_id not in valid_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{payload.openrouter_model_id!r} is not a known OpenRouter model. Check the model list."
+                )
+        except httpx.HTTPError:
+            pass  # Allow creation even if OpenRouter fetch fails
+    try:
+        row = await db.create_model(
+            display_name=payload.display_name,
+            openrouter_model_id=payload.openrouter_model_id,
+            context_length=payload.context_length,
+            description=payload.description,
+            cost_input_per_1m=payload.cost_input_per_1m,
+            cost_output_per_1m=payload.cost_output_per_1m,
+        )
+    except db.ModelValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return row
+
+
+@router.put("/models/{model_id}", dependencies=[Depends(db.verify_api_key)])
+async def api_update_model(model_id: int, payload: ModelUpdatePayload) -> dict[str, Any]:
+    try:
+        row = await db.update_model(
+            model_id=model_id,
+            display_name=payload.display_name,
+            openrouter_model_id=payload.openrouter_model_id,
+            context_length=payload.context_length,
+            description=payload.description,
+            cost_input_per_1m=payload.cost_input_per_1m,
+            cost_output_per_1m=payload.cost_output_per_1m,
+            is_fallback_default=payload.is_fallback_default,
+            enabled=payload.enabled,
+        )
+    except db.ModelValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Model {model_id} not found")
+    return row
+
+
+@router.delete("/models/{model_id}", dependencies=[Depends(db.verify_api_key)])
+async def api_disable_model(model_id: int) -> dict[str, Any]:
+    try:
+        ok = await db.disable_model(model_id)
+    except db.ModelValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Model {model_id} not found")
+    return {"disabled": model_id}
+
+
 # --- Settings / config panel ----------------------------------------------
 
 

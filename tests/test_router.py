@@ -151,9 +151,9 @@ async def test_chat_completions_non_stream_shape(client: AsyncClient, monkeypatc
 
     captured = {}
 
-    async def _fake_classify(prompt, confidence_gap=None):
+    async def _fake_classify(prompt, confidence_gap=None, choices=None, fallback_model_id=None):
         return Decision(
-            tier="simple",
+            tier="openai/gpt-4o-mini",
             used_fallback=False,
             jev_error=None,
             confidence=0.8,
@@ -191,12 +191,23 @@ async def test_chat_completions_non_stream_shape(client: AsyncClient, monkeypatc
     async def _fake_record_spend(caller_id, cost):
         return None
 
+    async def _fake_get_enabled_models():
+        return [
+            {"openrouter_model_id": "openai/gpt-4o-mini", "description": "Fast cheap model", "display_name": "GPT-4o Mini", "context_length": 128000},
+            {"openrouter_model_id": "anthropic/claude-sonnet-4", "description": "Mid tier for coding", "display_name": "Claude Sonnet 4", "context_length": 200000},
+        ]
+
+    async def _fake_get_fallback_model():
+        return {"openrouter_model_id": "anthropic/claude-sonnet-4"}
+
     monkeypatch.setattr(main, "classify_tier", _fake_classify)
     monkeypatch.setattr(main, "get_settings", _fake_get_settings)
     monkeypatch.setattr(main, "non_stream_completion", _fake_non_stream)
     monkeypatch.setattr(main, "log_request", _fake_log)
     monkeypatch.setattr(main, "check_key_budget", _fake_check_budget)
     monkeypatch.setattr(main, "record_spend", _fake_record_spend)
+    monkeypatch.setattr(main, "get_enabled_models_for_routing", _fake_get_enabled_models)
+    monkeypatch.setattr(main, "get_fallback_model", _fake_get_fallback_model)
 
     r = await client.post(
         "/v1/chat/completions",
@@ -206,7 +217,7 @@ async def test_chat_completions_non_stream_shape(client: AsyncClient, monkeypatc
     body = r.json()
     assert body["choices"][0]["message"]["content"] == "4"
     assert body["usage"]["cost"] == 0.000005
-    assert captured["log"]["tier"] == "simple"
+    assert captured["log"]["tier"] == "openai/gpt-4o-mini"
     assert captured["log"]["model"] == "openai/gpt-4o-mini"
     assert captured["log"]["cost_usd"] == 0.000005
     assert captured["log"]["success"] is True
@@ -223,9 +234,9 @@ async def test_chat_completions_stream_shape(client: AsyncClient, monkeypatch):
 
     captured = {}
 
-    async def _fake_classify(prompt, confidence_gap=None):
+    async def _fake_classify(prompt, confidence_gap=None, choices=None, fallback_model_id=None):
         return Decision(
-            tier="complex",
+            tier="anthropic/claude-sonnet-4",
             used_fallback=True,
             jev_error="forced fallback",
             confidence=None,
@@ -257,12 +268,23 @@ async def test_chat_completions_stream_shape(client: AsyncClient, monkeypatch):
     async def _fake_record_spend(caller_id, cost):
         return None
 
+    async def _fake_get_enabled_models():
+        return [
+            {"openrouter_model_id": "openai/gpt-4o-mini", "description": "Fast cheap model", "display_name": "GPT-4o Mini", "context_length": 128000},
+            {"openrouter_model_id": "anthropic/claude-sonnet-4", "description": "Mid tier for coding", "display_name": "Claude Sonnet 4", "context_length": 200000},
+        ]
+
+    async def _fake_get_fallback_model():
+        return {"openrouter_model_id": "anthropic/claude-sonnet-4"}
+
     monkeypatch.setattr(main, "classify_tier", _fake_classify)
     monkeypatch.setattr(main, "get_settings", _fake_get_settings)
     monkeypatch.setattr(main, "stream_completion", _fake_stream)
     monkeypatch.setattr(main, "log_request", _fake_log)
     monkeypatch.setattr(main, "check_key_budget", _fake_check_budget)
     monkeypatch.setattr(main, "record_spend", _fake_record_spend)
+    monkeypatch.setattr(main, "get_enabled_models_for_routing", _fake_get_enabled_models)
+    monkeypatch.setattr(main, "get_fallback_model", _fake_get_fallback_model)
 
     async with client.stream(
         "POST",
@@ -281,7 +303,7 @@ async def test_chat_completions_stream_shape(client: AsyncClient, monkeypatch):
         assert "chat.completion.chunk" in text
         assert "Hi" in text
 
-    assert captured["log"]["tier"] == "complex"
+    assert captured["log"]["tier"] == "anthropic/claude-sonnet-4"
     assert captured["log"]["used_fallback"] is True
     assert captured["log"]["jev_error"] == "forced fallback"
     assert captured["log"]["cost_usd"] == 0.0001

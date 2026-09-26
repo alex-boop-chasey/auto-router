@@ -124,9 +124,20 @@ def flatten_messages(messages: list[dict[str, Any]]) -> str:
 
 
 class TierClassifier:
-    """Jev/OpenRouter Decisions integration with fallback."""
+    """Jev/OpenRouter Decisions integration with fallback.
 
-    def __init__(self, confidence_gap: float | None = None) -> None:
+    Accepts dynamic ``choices`` — a mapping of model_id → description — so the
+    set of routable models is driven by the database, not hardcoded tiers.json.
+    On Jev failure, ``fallback_model_id`` (the is_fallback_default row) is
+    returned directly.
+    """
+
+    def __init__(
+        self,
+        confidence_gap: float | None = None,
+        choices: dict[str, str] | None = None,
+        fallback_model_id: str | None = None,
+    ) -> None:
         self.url = SETTINGS.jev_url
         self.model = SETTINGS.jev_model
         self.confidence_gap = (
@@ -135,6 +146,8 @@ class TierClassifier:
             else SETTINGS.jev_confidence_gap
         )
         self.timeout = 10.0
+        self.choices = choices or {}
+        self.fallback_model_id = fallback_model_id or "openai/gpt-4o-mini"
 
     @staticmethod
     def _resolve_with_confidence(
@@ -161,24 +174,44 @@ class TierClassifier:
         return top_tier
 
     async def classify(self, prompt: str) -> Decision:
-        """Return a Decision with routing-transparency metadata."""
+        """Return a Decision with routing-transparency metadata.
+
+        If choices dict is provided, Jev picks directly between model ids
+        (the original simple/medium/complex fixed-tier path is still available
+        as a fallback when no choices are set).
+        """
         from time import perf_counter_ns
 
-        payload = {
-            "model": self.model,
-            "questions": {
-                "tier": {
-                    "type": "choice",
-                    "instructions": "Which complexity tier does this task belong to?",
-                    "criteria": {
-                        "simple": "Short factual, greeting, or trivial question a cheap model handles perfectly",
-                        "medium": "Normal coding, reasoning, or multi-step task benefiting from a mid-tier model",
-                        "complex": "Hard reasoning, long context, or high-stakes task needing a frontier model",
-                    },
-                }
-            },
-            "state": prompt,
-        }
+        use_dynamic = bool(self.choices)
+
+        if use_dynamic:
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "questions": {
+                    "pick": {
+                        "type": "choice",
+                        "instructions": "Which model is best suited for this task?",
+                        "criteria": self.choices,
+                    }
+                },
+                "state": prompt,
+            }
+        else:
+            payload = {
+                "model": self.model,
+                "questions": {
+                    "tier": {
+                        "type": "choice",
+                        "instructions": "Which complexity tier does this task belong to?",
+                        "criteria": {
+                            "simple": "Short factual, greeting, or trivial question a cheap model handles perfectly",
+                            "medium": "Normal coding, reasoning, or multi-step task benefiting from a mid-tier model",
+                            "complex": "Hard reasoning, long context, or high-stakes task needing a frontier model",
+                        },
+                    }
+                },
+                "state": prompt,
+            }
         headers = {
             "Authorization": f"Bearer {SETTINGS.openrouter_api_key}",
             "Content-Type": "application/json",
@@ -213,57 +246,84 @@ class TierClassifier:
                         jev_error = f"Invalid JSON response: {resp.text[:200]}"
                     else:
                         try:
-                            answer: dict[str, Any] = body["answers"]["tier"]
-                            choice = answer.get("choice", "")
-                            probabilities = answer.get("probabilities", {choice: 1.0})
-                            if set(probabilities.keys()) != {"simple", "medium", "complex"}:
-                                probabilities = {
-                                    "simple": 0.0,
-                                    "medium": 0.0,
-                                    "complex": 0.0,
-                                    **probabilities,
-                                }
-                            if choice in {"simple", "medium", "complex"}:
-                                tier = self._resolve_with_confidence(
-                                    probabilities, choice, self.confidence_gap
-                                )
-                                sorted_probs = sorted(
-                                    probabilities.items(),
-                                    key=lambda kv: (-kv[1], -TIER_ORDER.get(kv[0], 0)),
-                                )
-                                _top_tier, top_prob = sorted_probs[0]
-                                second_prob = (
-                                    sorted_probs[1][1] if len(sorted_probs) > 1 else top_prob
-                                )
-                                gap = top_prob - second_prob
-                                escalation_fired = (
-                                    len(sorted_probs) > 1 and gap < self.confidence_gap
-                                )
-                                raw_choice = choice
-                                decision_latency_ms = (perf_counter_ns() - t0) // 1_000_000
-                                return Decision(
-                                    tier=tier,
-                                    used_fallback=False,
-                                    jev_error=None,
-                                    confidence=top_prob,
-                                    probability_gap=gap,
-                                    probabilities=probabilities,
-                                    escalation_fired=escalation_fired,
-                                    jev_raw_choice=raw_choice,
-                                    decision_latency_ms=decision_latency_ms,
-                                )
-                            jev_error = f"Unexpected tier choice: {choice}"
+                            if use_dynamic:
+                                answer: dict[str, Any] = body["answers"]["pick"]
+                                choice = answer.get("choice", "")
+                                probabilities = answer.get("probabilities", {choice: 1.0})
+                                # Dynamic mode: Jev picks a model_id directly.
+                                if choice and choice in self.choices:
+                                    decision_latency_ms = (perf_counter_ns() - t0) // 1_000_000
+                                    return Decision(
+                                        tier=choice,  # tier == model_id in dynamic mode
+                                        used_fallback=False,
+                                        jev_error=None,
+                                        confidence=probabilities.get(choice, 1.0),
+                                        probability_gap=0.0,  # meaningless with varied N choices
+                                        probabilities=probabilities,
+                                        escalation_fired=False,
+                                        jev_raw_choice=choice,
+                                        decision_latency_ms=decision_latency_ms,
+                                    )
+                                jev_error = f"Unexpected model choice: {choice!r}"
+                            else:
+                                answer = body["answers"]["tier"]
+                                choice = answer.get("choice", "")
+                                probabilities = answer.get("probabilities", {choice: 1.0})
+                                if set(probabilities.keys()) != {"simple", "medium", "complex"}:
+                                    probabilities = {
+                                        "simple": 0.0,
+                                        "medium": 0.0,
+                                        "complex": 0.0,
+                                        **probabilities,
+                                    }
+                                if choice in {"simple", "medium", "complex"}:
+                                    tier = self._resolve_with_confidence(
+                                        probabilities, choice, self.confidence_gap
+                                    )
+                                    sorted_probs = sorted(
+                                        probabilities.items(),
+                                        key=lambda kv: (-kv[1], -TIER_ORDER.get(kv[0], 0)),
+                                    )
+                                    _top_tier, top_prob = sorted_probs[0]
+                                    second_prob = (
+                                        sorted_probs[1][1] if len(sorted_probs) > 1 else top_prob
+                                    )
+                                    gap = top_prob - second_prob
+                                    escalation_fired = (
+                                        len(sorted_probs) > 1 and gap < self.confidence_gap
+                                    )
+                                    raw_choice = choice
+                                    decision_latency_ms = (perf_counter_ns() - t0) // 1_000_000
+                                    return Decision(
+                                        tier=tier,
+                                        used_fallback=False,
+                                        jev_error=None,
+                                        confidence=top_prob,
+                                        probability_gap=gap,
+                                        probabilities=probabilities,
+                                        escalation_fired=escalation_fired,
+                                        jev_raw_choice=raw_choice,
+                                        decision_latency_ms=decision_latency_ms,
+                                    )
+                                jev_error = f"Unexpected tier choice: {choice}"
                         except KeyError as exc:
                             jev_error = f"Missing field: {exc}"
 
         return Decision(
-            tier=fallback_classify(prompt),
+            tier=self.fallback_model_id if use_dynamic else fallback_classify(prompt),
             used_fallback=True,
             jev_error=jev_error,
         )
 
 
 async def classify_tier(
-    prompt: str, confidence_gap: float | None = None
+    prompt: str,
+    confidence_gap: float | None = None,
+    choices: dict[str, str] | None = None,
+    fallback_model_id: str | None = None,
 ) -> Decision:
-    return await TierClassifier(confidence_gap=confidence_gap).classify(prompt)
+    return await TierClassifier(
+        confidence_gap=confidence_gap,
+        choices=choices,
+        fallback_model_id=fallback_model_id,
+    ).classify(prompt)
