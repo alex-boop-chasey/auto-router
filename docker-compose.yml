@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: auto-router-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -39,6 +40,7 @@ services:
     build:
       context: .
     container_name: auto-router
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy

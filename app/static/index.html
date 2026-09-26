@@ -150,7 +150,10 @@
         <h1>OpenRouter Catalog</h1>
         <p>Search and add models from OpenRouter's live catalog to your routing table.
            Models already in your router are marked.</p>
-        <input id="or-search" placeholder="Filter by name or model ID..." style="width:100%;margin-bottom:var(--space-3)">
+        <div class="toolbar-row" style="gap:var(--space-2);margin-bottom:var(--space-3)">
+          <input id="or-search" placeholder="Filter by name or model ID..." style="flex:1">
+          <select id="or-sort"></select>
+        </div>
         <div id="or-count" class="mono" style="margin-bottom:var(--space-2)"></div>
         <table id="or-table" class="data-table">
           <thead><tr>

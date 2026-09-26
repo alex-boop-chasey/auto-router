@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from . import db
 from .config import load_tiers
-from .openrouter_admin import fetch_credits, fetch_model_catalog
+from .openrouter_admin import fetch_credits, fetch_model_catalog, fetch_model_catalog_enriched
 from .settings_store import (
     CONSERVATISM_PRESETS,
     SettingsValidationError,
@@ -73,7 +73,7 @@ async def api_spend(
 @router.get("/openrouter/models", dependencies=[Depends(db.verify_api_key)])
 async def api_openrouter_models() -> dict[str, Any]:
     try:
-        models = await fetch_model_catalog()
+        models = await fetch_model_catalog_enriched()
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"OpenRouter models fetch failed: {exc}")
     return {"data": models}

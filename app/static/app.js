@@ -256,11 +256,52 @@ $("#spend-refresh").onclick = loadSpend;
 // --- model catalog v3 (OpenRouter catalog + local routing table) ---
 
 // OpenRouter catalog data
-state.orModels = [];          // full sorted catalog (feeds the tiers datalist)
-state.orTop100 = [];          // top-100 slice shown in the catalog table
+state.orModels = [];          // full catalog, sorted by the active sort key
 state.orModelsLoaded = false;
 state.orPage = 1;             // current catalog page (1-indexed)
+state.orSort = "popular";     // active sort key (default: Most Popular)
 const OR_PAGE_SIZE = 20;      // models per page
+
+// Sort options for the OpenRouter catalog. `field` is the merged model key,
+// `dir` is -1 (desc) / +1 (asc). Nulls always sort to the bottom.
+const OR_SORTS = [
+  { key: "popular",     label: "Most Popular",                  field: "weekly_tokens",      dir: -1 },
+  { key: "newest",      label: "Newest",                        field: "created",            dir: -1 },
+  { key: "oldest",      label: "Oldest",                        field: "created",            dir: 1 },
+  { key: "topweekly",   label: "Top Weekly",                    field: "weekly_tokens",      dir: -1 },
+  { key: "weekly-asc",  label: "Weekly Tokens: Low to High",    field: "weekly_tokens",      dir: 1 },
+  { key: "discount",    label: "Discount: High to Low",         field: "discount",           dir: -1 },
+  { key: "price-asc",   label: "Pricing: Low to High",          field: "price_usd",          dir: 1 },
+  { key: "price-desc",  label: "Pricing: High to Low",          field: "price_usd",          dir: -1 },
+  { key: "ctx-desc",    label: "Context: High to Low",          field: "context_length",     dir: -1 },
+  { key: "ctx-asc",     label: "Context: Low to High",          field: "context_length",     dir: 1 },
+  { key: "tput-desc",   label: "Throughput: High to Low",       field: "p50_throughput",     dir: -1 },
+  { key: "tput-asc",    label: "Throughput: Low to High",       field: "p50_throughput",     dir: 1 },
+  { key: "lat-asc",     label: "Latency: Low to High",          field: "p50_latency",        dir: 1 },
+  { key: "lat-desc",    label: "Latency: High to Low",          field: "p50_latency",        dir: -1 },
+  { key: "intel-desc",  label: "Intelligence: High to Low",     field: "intelligence_index", dir: -1 },
+  { key: "intel-asc",   label: "Intelligence: Low to High",     field: "intelligence_index", dir: 1 },
+  { key: "coding-desc", label: "Coding: High to Low",           field: "coding_index",       dir: -1 },
+  { key: "coding-asc",  label: "Coding: Low to High",           field: "coding_index",       dir: 1 },
+  { key: "agent-desc",  label: "Agentic: High to Low",          field: "agentic_index",      dir: -1 },
+  { key: "agent-asc",   label: "Agentic: Low to High",          field: "agentic_index",      dir: 1 },
+  { key: "design",      label: "Design Arena ELO: High to Low", field: "design_arena_elo",   dir: -1 },
+];
+
+function sortORCatalog() {
+  const s = OR_SORTS.find(x => x.key === state.orSort) || OR_SORTS[0];
+  const desc = s.dir < 0;
+  state.orModels.sort((a, b) => {
+    const av = a[s.field], bv = b[s.field];
+    const aNull = av === null || av === undefined || av === "";
+    const bNull = bv === null || bv === undefined || bv === "";
+    if (aNull && bNull) return 0;
+    if (aNull) return 1;   // nulls always sort last
+    if (bNull) return -1;
+    if (av === bv) return 0;
+    return desc ? (av > bv ? -1 : 1) : (av < bv ? -1 : 1);
+  });
+}
 
 async function loadModelCatalog() {
   $("models-error").style.display = "none";
@@ -273,19 +314,8 @@ async function loadModelCatalog() {
 async function loadORCatalog() {
   try {
     const data = await api("/api/openrouter/models");
-    const all = (data.data || []).filter(m => m.id && m.pricing);
-    // Pre-sort: known good models first, then alphabetical
-    const top = ["openai/", "anthropic/", "google/", "meta-llama/", "mistral/", "deepseek/", "qwen/"];
-    all.sort((a, b) => {
-      const ai = top.findIndex(p => a.id.startsWith(p));
-      const bi = top.findIndex(p => b.id.startsWith(p));
-      if (ai !== -1 && bi === -1) return -1;
-      if (ai === -1 && bi !== -1) return 1;
-      if (ai !== bi) return ai - bi;
-      return (a.id < b.id ? -1 : 1);
-    });
-    state.orModels = all;                 // full list — feeds the tiers datalist
-    state.orTop100 = all.slice(0, 100);   // top 100 models, paginated below
+    state.orModels = (data.data || []).filter(m => m.id && m.pricing);
+    sortORCatalog();
     state.orModelsLoaded = true;
   } catch (e) {
     $("or-table").querySelector("tbody").innerHTML =
@@ -300,10 +330,10 @@ function renderORTable() {
   const tb = $("or-table").querySelector("tbody");
   tb.innerHTML = "";
 
-  // Filter the top-100 catalog by the search query.
+  // Filter the full catalog by the search query.
   const matches = q
-    ? state.orTop100.filter(m => m.id.toLowerCase().includes(q) || (m.name || "").toLowerCase().includes(q))
-    : state.orTop100;
+    ? state.orModels.filter(m => m.id.toLowerCase().includes(q) || (m.name || "").toLowerCase().includes(q))
+    : state.orModels;
 
   // Paginate.
   const pageCount = Math.max(1, Math.ceil(matches.length / OR_PAGE_SIZE));
@@ -369,7 +399,7 @@ function renderORTable() {
 
   $("or-count").textContent =
     (matches.length === 0 ? "0" : (start + 1) + "–" + (start + pageModels.length)) +
-    " of " + matches.length + " matching · top 100 of " + state.orModels.length + " total";
+    " of " + matches.length + " matching · " + state.orModels.length + " total";
 
   $("or-page").textContent = "Page " + state.orPage + " of " + pageCount;
   $("or-prev").disabled = state.orPage <= 1;
@@ -382,6 +412,20 @@ $("or-search").oninput = () => { state.orPage = 1; renderORTable(); };
 // Pagination controls
 $("or-prev").onclick = () => { state.orPage--; renderORTable(); };
 $("or-next").onclick = () => { state.orPage++; renderORTable(); };
+
+// Populate the sort dropdown from OR_SORTS (single source of truth)
+(function populateSort() {
+  const sel = $("or-sort");
+  for (const s of OR_SORTS) {
+    const opt = el("option", s.label);
+    opt.value = s.key;
+    sel.appendChild(opt);
+  }
+  sel.value = state.orSort;
+})();
+
+// Sort dropdown — resort + repaginate on change
+$("or-sort").onchange = () => { state.orPage = 1; sortORCatalog(); renderORTable(); };
 
 // --- Your models (local routing table) ---
 state.myModels = [];
