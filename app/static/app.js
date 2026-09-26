@@ -146,10 +146,18 @@ async function loadHealth() {
   const box = $("#decision-health");
   try {
     const h = await fetch("/health").then((r) => r.json());
-    box.textContent = "Decision layer last confirmed working: " + fmtAgo(h.last_successful_decision_at);
-    box.className = "health " + (h.last_successful_decision_at ? "ok" : "warn");
+    if (h.last_successful_decision_at) {
+      box.textContent = "Decision layer: ok";
+      box.title = "Last confirmed working " + fmtAgo(h.last_successful_decision_at);
+      box.className = "health ok";
+    } else {
+      box.textContent = "Decision layer: no data yet";
+      box.title = "";
+      box.className = "health warn";
+    }
   } catch (e) {
-    box.textContent = "Decision layer status unavailable: " + e.message;
+    box.textContent = "Decision layer: unavailable";
+    box.title = e.message;
     box.className = "health warn";
   }
 }

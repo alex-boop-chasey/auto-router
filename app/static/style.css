@@ -69,7 +69,16 @@ code, .mono { font-family: var(--font-mono); font-size: 0.92em; }
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
   padding: var(--space-3); border-top: 1px solid var(--border);
 }
-.sidebar-foot .health { flex: 1; min-width: 0; }
+.sidebar-foot .health {
+  flex: 1; min-width: 0;
+  /* The sidebar rail is narrow, so this pill can't safely wrap onto multiple
+     lines — with border-radius:9999px a wrapped 2-3 line block turns into a
+     rounded blob instead of a pill. Force a single truncated line here and
+     use a smaller, sane radius; put the full message in the title tooltip
+     (see loadHealth() in app.js) rather than relying on wrapping. */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border-radius: var(--radius-md);
+}
 
 .icon-btn {
   font: inherit; line-height: 1; cursor: pointer;
