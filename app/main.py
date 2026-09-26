@@ -31,6 +31,8 @@ from .db import (
     get_fallback_model,
     get_settings,
     init_db,
+    last_fallback_at,
+    last_request_at,
     last_successful_decision_at,
     log_request,
     verify_api_key,
@@ -96,13 +98,19 @@ app = create_app()
 @router.get("/health")
 async def health() -> dict[str, Any]:
     last_at: datetime | None = None
+    last_fallback: datetime | None = None
+    last_request: datetime | None = None
     try:
         last_at = await last_successful_decision_at()
+        last_fallback = await last_fallback_at()
+        last_request = await last_request_at()
     except Exception:  # noqa: BLE001 — health must degrade gracefully if the DB is unreachable
-        last_at = None
+        last_at = last_fallback = last_request = None
     return {
         "status": "ok",
         "last_successful_decision_at": last_at.isoformat() if last_at else None,
+        "last_fallback_at": last_fallback.isoformat() if last_fallback else None,
+        "last_request_at": last_request.isoformat() if last_request else None,
     }
 
 

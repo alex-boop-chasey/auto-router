@@ -142,6 +142,10 @@ code, .mono { font-family: var(--font-mono); font-size: 0.92em; }
 .health.ok::before { background: var(--color-success); }
 .health.warn { color: var(--color-warning); border-color: var(--color-warning); background: var(--color-warning-soft); }
 .health.warn::before { background: var(--color-warning); }
+.health.danger { color: var(--color-danger); border-color: var(--color-danger); background: var(--color-danger-soft); }
+.health.danger::before { background: var(--color-danger); }
+.health.ok::before { animation: health-pulse 2s ease-in-out infinite; }
+@keyframes health-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 /* ---------- Main + tabs ---------- */
 main { max-width: var(--content-max); margin: 0 auto; padding: var(--space-4); width: 100%; }

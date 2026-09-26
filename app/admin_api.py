@@ -152,6 +152,22 @@ async def api_delete_key(key_id: str) -> dict[str, Any]:
     return {"deleted": key_id}
 
 
+class KeyPreviewPayload(BaseModel):
+    prompt_preview_enabled: bool
+
+
+@router.put("/keys/{key_id}/preview", dependencies=[Depends(db.verify_api_key)])
+async def api_key_preview(key_id: str, payload: KeyPreviewPayload) -> dict[str, Any]:
+    try:
+        uuid.UUID(key_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="key id must be a UUID")
+    row = await db.update_key_preview(key_id, payload.prompt_preview_enabled)
+    if not row:
+        raise HTTPException(status_code=404, detail="key not found")
+    return row
+
+
 # --- Model catalog shortlist (enabled/disabled) ---------------------------
 
 

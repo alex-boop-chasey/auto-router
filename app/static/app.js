@@ -141,26 +141,35 @@ document.querySelectorAll("nav button").forEach((btn) => {
   };
 });
 
-// --- health indicator ---
+// --- health indicator (Jev connection heartbeat) ---
 async function loadHealth() {
   const box = $("#decision-health");
   try {
     const h = await fetch("/health").then((r) => r.json());
-    if (h.last_successful_decision_at) {
-      box.textContent = "Decision layer: ok";
-      box.title = "Last confirmed working " + fmtAgo(h.last_successful_decision_at);
-      box.className = "health ok";
+    const lastOk = h.last_successful_decision_at ? +new Date(h.last_successful_decision_at) : 0;
+    const lastFb = h.last_fallback_at ? +new Date(h.last_fallback_at) : 0;
+    const lastReq = h.last_request_at ? +new Date(h.last_request_at) : 0;
+    if (!lastReq) {
+      box.textContent = "Jev: idle";
+      box.title = "No requests routed yet.";
+      box.className = "health";
+    } else if (lastFb > lastOk) {
+      box.textContent = "Jev: fallback";
+      box.title = "Falling back" + (h.last_fallback_at ? " (last " + fmtAgo(h.last_fallback_at) + ")" : "") +
+        ". Jev couldn't make a confident decision recently.";
+      box.className = "health danger";
     } else {
-      box.textContent = "Decision layer: no data yet";
-      box.title = "";
-      box.className = "health warn";
+      box.textContent = "Jev: connected";
+      box.title = "Working — last decision " + fmtAgo(h.last_successful_decision_at);
+      box.className = "health ok";
     }
   } catch (e) {
-    box.textContent = "Decision layer: unavailable";
-    box.title = e.message;
-    box.className = "health warn";
+    box.textContent = "Jev: down";
+    box.title = "Health check failed: " + e.message;
+    box.className = "health danger";
   }
 }
+setInterval(loadHealth, 15000);
 
 // --- request log ---
 async function loadLog() {
@@ -199,14 +208,15 @@ async function loadLog() {
       // hidden detail row
       const detail = el("tr");
       detail.className = "row-detail";
-      detail.hidden = true;
+      detail.hidden = !$("#log-show-prompts").checked;
       const dtd = el("td"); dtd.colSpan = 14;
       const prob = r.probabilities
         ? Object.entries(r.probabilities).map(([k, v]) => k + " " + fmtProb(v)).join("  ·  ")
         : "(none)";
+      dtd.appendChild(el("div", "chosen model: " + (r.model || "(none)")));
+      dtd.appendChild(el("div", "prompt: " + (r.prompt_preview || "(not stored — turn on 'preview' for that key)")));
       dtd.appendChild(el("div", "error: " + (r.error || "(none)")));
       dtd.appendChild(el("div", "jev_error: " + (r.jev_error || "(none)")));
-      dtd.appendChild(el("div", "preview: " + (r.prompt_preview || "(not enabled)")));
       dtd.appendChild(el("div", "probabilities: " + prob));
       detail.appendChild(dtd);
       tb.appendChild(detail);
@@ -219,6 +229,7 @@ async function loadLog() {
   } catch (e) { showError("Request log: " + e.message); }
 }
 $("#log-filters").onsubmit = (e) => { e.preventDefault(); state.logOffset = 0; loadLog(); };
+$("#log-show-prompts").onchange = () => loadLog();
 $("#log-reset").onclick = () => { $("#log-filters").reset(); state.logOffset = 0; loadLog(); };
 $("#log-prev").onclick = () => { state.logOffset = Math.max(0, state.logOffset - state.logLimit); loadLog(); };
 $("#log-next").onclick = () => { state.logOffset += state.logLimit; loadLog(); };
@@ -606,9 +617,22 @@ async function loadKeys() {
     const tb = $("#keys-table tbody"); tb.innerHTML = "";
     for (const k of data.data) {
       const tr = el("tr");
-      const labels = ["caller", "key", "preview", "created"];
-      [k.caller_id, k.api_key, k.prompt_preview_enabled ? "on" : "off", fmtTime(k.created_at)]
-        .forEach((c, i) => tr.appendChild(cell(labels[i], c)));
+      tr.appendChild(cell("caller", k.caller_id));
+      tr.appendChild(cell("key", k.api_key));
+      const pvCell = cell("preview");
+      const pvBtn = el("button", k.prompt_preview_enabled ? "on" : "off");
+      pvBtn.className = "btn " + (k.prompt_preview_enabled ? "btn-primary" : "btn-ghost");
+      pvBtn.title = "Toggle whether prompts are stored for this key";
+      pvBtn.onclick = async () => {
+        try {
+          await api("/api/keys/" + k.id + "/preview", {
+            method: "PUT", body: JSON.stringify({ prompt_preview_enabled: !k.prompt_preview_enabled }),
+          });
+          loadKeys();
+        } catch (e) { showError("Toggle preview: " + e.message); }
+      };
+      pvCell.appendChild(pvBtn); tr.appendChild(pvCell);
+      tr.appendChild(cell("created", fmtTime(k.created_at)));
       const td = cell("");
       const btn = el("button", "Revoke");
       btn.className = "btn btn-danger";

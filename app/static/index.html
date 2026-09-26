@@ -81,14 +81,6 @@
           <img class="brand-logo" src="/static/logo.svg" alt="" width="24" height="24">
           <span class="brand-name">auto<span class="brand-accent">router</span></span>
         </a>
-        <div class="toolbar">
-          <label class="field">
-            <span class="field-label">Router API key</span>
-            <input type="password" id="router-key" placeholder="paste a router API key">
-          </label>
-          <button class="btn btn-primary" id="save-key" type="button">Save key</button>
-          <span id="auth-status" class="status"></span>
-        </div>
       </header>
 
       <main>
@@ -104,6 +96,7 @@
           <label>Result <select name="success"><option value="">any</option><option value="true">success</option><option value="false">fail</option></select></label>
           <label>From <input type="date" name="start"></label>
           <label>To <input type="date" name="end"></label>
+          <label class="field"><input type="checkbox" id="log-show-prompts"> Show prompts &amp; decision</label>
           <button class="btn btn-primary" type="submit">Apply</button>
           <button class="btn" type="button" id="log-reset">Reset</button>
         </form>
@@ -233,6 +226,18 @@
 
     <!-- Keys -->
     <section id="tab-keys" class="tab" hidden>
+      <div class="card">
+        <h1>Router API key</h1>
+        <p class="mono">Authorizes this dashboard against the router's admin API. Stored only in your browser.</p>
+        <div class="toolbar-row">
+          <label class="field" style="flex:1">
+            <span class="field-label">Admin API key</span>
+            <input type="password" id="router-key" placeholder="paste a router API key">
+          </label>
+          <button class="btn btn-primary" id="save-key" type="button">Save key</button>
+          <span id="auth-status" class="status"></span>
+        </div>
+      </div>
       <div class="card">
         <h1>API keys</h1>
         <table id="keys-table" class="data-table">

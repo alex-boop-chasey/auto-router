@@ -482,6 +482,23 @@ async def delete_key(key_id: str) -> bool:
     return row is not None
 
 
+async def update_key_preview(key_id: str, prompt_preview_enabled: bool) -> dict[str, Any] | None:
+    """Toggle whether a key's prompts are stored on the request log."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE keys
+            SET prompt_preview_enabled = $1
+            WHERE id = $2
+            RETURNING id, caller_id, api_key, created_at, prompt_preview_enabled
+            """,
+            prompt_preview_enabled,
+            key_id,
+        )
+    return dict(row) if row else None
+
+
 # --- Settings -------------------------------------------------------------
 
 
@@ -723,3 +740,23 @@ async def last_successful_decision_at() -> datetime | None:
             WHERE success = TRUE AND used_fallback = FALSE
             """
         )
+
+
+async def last_fallback_at() -> datetime | None:
+    """Timestamp of the most recent request that fell back (used_fallback)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            """
+            SELECT MAX(timestamp)
+            FROM requests
+            WHERE used_fallback = TRUE
+            """
+        )
+
+
+async def last_request_at() -> datetime | None:
+    """Timestamp of the most recent request of any kind."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT MAX(timestamp) FROM requests")
