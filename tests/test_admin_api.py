@@ -249,7 +249,7 @@ async def test_static_app_js_served(client: AsyncClient):
 async def test_static_phase3_assets_served(client: AsyncClient):
     for path, needle in [
         ("/static/tokens.css", "--color-primary"),
-        ("/static/style.css", ".nav.is-open"),
+        ("/static/style.css", ".sidebar.is-open"),
         ("/static/logo.svg", "<svg"),
     ]:
         r = await client.get(path)
