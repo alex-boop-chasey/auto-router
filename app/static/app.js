@@ -253,105 +253,235 @@ function fillTable(sel, labels, rows, mapFn) {
 $("#spend-bucket").onchange = loadSpend;
 $("#spend-refresh").onclick = loadSpend;
 
-// --- model catalog v2 (full CRUD) ---
+// --- model catalog v3 (OpenRouter catalog + local routing table) ---
+
+// OpenRouter catalog data
+state.orModels = [];
+state.orModelsLoaded = false;
+
 async function loadModelCatalog() {
   $("models-error").style.display = "none";
+  // Load both in parallel
+  await Promise.all([loadORCatalog(), loadLocalModels()]);
+  renderMyModels();
+}
+
+// --- OpenRouter catalog ---
+async function loadORCatalog() {
+  try {
+    const data = await api("/api/openrouter/models");
+    state.orModels = (data.data || []).filter(m => m.id && m.pricing);
+    // Pre-sort: known good models first, then alphabetical
+    const top = ["openai/", "anthropic/", "google/", "meta-llama/", "mistral/", "deepseek/", "qwen/"];
+    state.orModels.sort((a, b) => {
+      const ai = top.findIndex(p => a.id.startsWith(p));
+      const bi = top.findIndex(p => b.id.startsWith(p));
+      if (ai !== -1 && bi === -1) return -1;
+      if (ai === -1 && bi !== -1) return 1;
+      if (ai !== bi) return ai - bi;
+      return (a.id < b.id ? -1 : 1);
+    });
+    state.orModelsLoaded = true;
+  } catch (e) {
+    $("or-table").querySelector("tbody").innerHTML =
+      '<tr><td colspan="5">OpenRouter catalog requires a valid router key. Enter your key in the top bar.</td></tr>';
+  }
+  renderORTable();
+}
+
+function renderORTable() {
+  const q = ($("or-search").value || "").toLowerCase();
+  const localIDs = new Set(state.myModels.map(m => m.openrouter_model_id));
+  const tb = $("or-table").querySelector("tbody");
+  tb.innerHTML = "";
+  let shown = 0;
+  for (const m of state.orModels) {
+    if (q && !(m.id.toLowerCase().includes(q) || (m.name || "").toLowerCase().includes(q))) continue;
+    shown++;
+    const tr = el("tr");
+    const added = localIDs.has(m.id);
+    if (added) tr.className = "row-disabled";
+    const promptCost = m.pricing ? parseFloat(m.pricing.prompt || 0) * 1e6 : null;
+    const compCost = m.pricing ? parseFloat(m.pricing.completion || 0) * 1e6 : null;
+    const costStr = (promptCost !== null && compCost !== null)
+      ? "$" + promptCost.toFixed(2) + " / $" + compCost.toFixed(2)
+      : (m.pricing ? "$" + (parseFloat(m.pricing.prompt || 0) * 1e6).toFixed(2) : "—");
+    [m.id, m.name || "—", m.context_length != null ? m.context_length.toLocaleString() : "—", costStr].forEach(c => {
+      const td = el("td", c);
+      tr.appendChild(td);
+    });
+    const actTd = el("td");
+    if (added) {
+      const badge = el("span", "Added");
+      badge.className = "badge normal";
+      actTd.appendChild(badge);
+    } else {
+      const btn = el("button", "+ Add");
+      btn.className = "btn btn-primary";
+      btn.style.fontSize = "var(--text-xs)";
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = "Adding...";
+        try {
+          await api("/api/models", {
+            method: "POST",
+            body: JSON.stringify({
+              display_name: m.name || m.id,
+              openrouter_model_id: m.id,
+              context_length: m.context_length || 128000,
+              cost_input_per_1m: promptCost,
+              cost_output_per_1m: compCost,
+              description: (m.name || m.id) + " — " + (m.context_length || "?") + " ctx",
+            }),
+          });
+          await loadModelCatalog();
+        } catch (e) {
+          $("models-error").style.display = "block";
+          $("models-error").textContent = "Add failed: " + e.message;
+          btn.disabled = false;
+          btn.textContent = "+ Add";
+        }
+      };
+      actTd.appendChild(btn);
+    }
+    tr.appendChild(actTd);
+    tb.appendChild(tr);
+  }
+  $("or-count").textContent = shown + " of " + state.orModels.length + " models shown";
+}
+
+// Search on input
+$("or-search").oninput = renderORTable;
+
+// --- Your models (local routing table) ---
+state.myModels = [];
+
+async function loadLocalModels() {
   try {
     const data = await api("/api/models");
-    state.models = data.data || [];
-  } catch (e) { state.models = []; showModelsError("Load failed: " + e.message); }
-  renderModelTable();
+    state.myModels = data.data || [];
+  } catch (e) { state.myModels = []; }
+  // Refresh OR table to update Added badges
+  if (state.orModelsLoaded) renderORTable();
 }
-function showModelsError(msg) {
-  const box = $("models-error");
-  box.style.display = msg ? "block" : "none";
-  box.textContent = msg;
-}
-function renderModelTable() {
-  const tb = $("models-table tbody");
+
+function renderMyModels() {
+  const tb = $("models-table").querySelector("tbody");
   tb.innerHTML = "";
-  for (const m of state.models) {
+  if (state.myModels.length === 0) {
+    tb.innerHTML = '<tr><td colspan="6">No models in your router yet. Browse the OpenRouter catalog above and click +Add.</td></tr>';
+    return;
+  }
+  for (const m of state.myModels) {
     const tr = el("tr");
-    tr.className = m.enabled ? "" : "row-disabled";
-    const costIn = m.cost_input_per_1m != null ? "$" + Number(m.cost_input_per_1m).toFixed(2) : "—";
-    const costOut = m.cost_output_per_1m != null ? "$" + Number(m.cost_output_per_1m).toFixed(2) : "—";
-    [m.display_name, m.openrouter_model_id, m.context_length != null ? m.context_length.toLocaleString() : "—",
-     costIn + " / " + costOut].forEach((c, i) => {
-      const td = el("td"); td.textContent = c; tr.appendChild(td);
+    if (!m.enabled) tr.className = "row-disabled";
+
+    [m.display_name, m.openrouter_model_id, (m.context_length || "—").toLocaleString()].forEach(c => {
+      tr.appendChild(el("td", String(c ?? "—")));
     });
+
     // Fallback badge
-    const fbTd = el("td");
+    const ftd = el("td");
     const fb = el("span", m.is_fallback_default ? "fallback" : "—");
-    fb.className = m.is_fallback_default ? "badge normal" : "";
-    fbTd.appendChild(fb); tr.appendChild(fbTd);
+    fb.className = m.is_fallback_default ? "badge escalated" : "badge normal";
+    ftd.appendChild(fb);
+    tr.appendChild(ftd);
+
     // Enabled toggle
-    const enTd = el("td");
-    const toggle = el("button", m.enabled ? "enabled" : "disabled");
-    toggle.className = m.enabled ? "toggle on" : "toggle off";
+    const etd = el("td");
+    const toggle = el("button", m.enabled ? "on" : "off");
+    toggle.className = "toggle " + (m.enabled ? "on" : "off");
     toggle.onclick = async () => {
       try {
-        await api("/api/models/" + m.id, { method: "PUT", body: JSON.stringify({ enabled: !m.enabled }) });
+        await api("/api/models/" + m.id, {
+          method: "PUT",
+          body: JSON.stringify({ enabled: !m.enabled }),
+        });
         await loadModelCatalog();
-      } catch (e) { showModelsError("Toggle: " + e.message); }
+      } catch (e) {
+        $("models-error").style.display = "block";
+        $("models-error").textContent = "Toggle: " + e.message;
+      }
     };
-    enTd.appendChild(toggle); tr.appendChild(enTd);
-    // Edit button
+    etd.appendChild(toggle);
+    tr.appendChild(etd);
+
+    // Actions
     const actTd = el("td");
-    const editBtn = el("button", "edit");
+    const editBtn = el("button", "Edit");
     editBtn.className = "btn btn-ghost";
     editBtn.onclick = () => openModelForm(m);
-    actTd.appendChild(editBtn); tr.appendChild(actTd);
+    actTd.appendChild(editBtn);
+    tr.appendChild(actTd);
+
     tb.appendChild(tr);
   }
 }
-$("models-add-btn").onclick = () => openModelForm(null);
-$("models-form-cancel").onclick = () => { $("models-form-card").style.display = "none"; };
-$("models-form").onsubmit = async () => {
-  const id = $("models-form-id").value;
-  const body = {
-    display_name: $("models-form-name").value.trim(),
-    openrouter_model_id: $("models-form-slug").value.trim(),
-    context_length: parseInt($("models-form-ctx").value),
-    description: $("models-form-desc").value.trim(),
-    cost_input_per_1m: $("models-form-cost-in").value ? parseFloat($("models-form-cost-in").value) : null,
-    cost_output_per_1m: $("models-form-cost-out").value ? parseFloat($("models-form-cost-out").value) : null,
-  };
-  const status = $("models-form-status");
-  status.textContent = "Saving...";
-  try {
-    if (id) { await api("/api/models/" + id, { method: "PUT", body: JSON.stringify(body) }); }
-    else { await api("/api/models", { method: "POST", body: JSON.stringify(body) }); }
-    status.textContent = "Saved";
-    $("models-form-card").style.display = "none";
-    await loadModelCatalog();
-  } catch (e) { status.textContent = ""; showModelsError("Save: " + e.message); }
-};
+
+$("models-refresh").onclick = loadModelCatalog;
+
+// --- Edit form ---
 function openModelForm(model) {
+  if (!model) return;
   $("models-form-card").style.display = "block";
-  $("models-error").style.display = "none";
-  if (model) {
-    $("models-form-title").textContent = "Edit Model";
-    $("models-form-id").value = model.id;
-    $("models-form-name").value = model.display_name || "";
-    $("models-form-slug").value = model.openrouter_model_id || "";
-    $("models-form-ctx").value = model.context_length || "";
-    $("models-form-desc").value = model.description || "";
-    $("models-form-cost-in").value = model.cost_input_per_1m != null ? model.cost_input_per_1m : "";
-    $("models-form-cost-out").value = model.cost_output_per_1m != null ? model.cost_output_per_1m : "";
-  } else {
-    $("models-form-title").textContent = "Add Model";
-    $("models-form-id").value = "";
-    $("models-form-name").value = "";
-    $("models-form-slug").value = "";
-    $("models-form-ctx").value = "";
-    $("models-form-desc").value = "";
-    $("models-form-cost-in").value = "";
-    $("models-form-cost-out").value = "";
-  }
+  $("models-form-title").textContent = "Edit: " + (model.display_name || model.openrouter_model_id);
+  $("models-form-id").value = model.id || "";
+  $("models-form-name").value = model.display_name || "";
+  $("models-form-slug").value = model.openrouter_model_id || "";
+  $("models-form-ctx").value = model.context_length || "";
+  $("models-form-cost-in").value = model.cost_input_per_1m ?? "";
+  $("models-form-cost-out").value = model.cost_output_per_1m ?? "";
+  $("models-form-desc").value = model.description || "";
   $("models-form-status").textContent = "";
-  $("models-form-name").focus();
 }
 
+$("models-form-save").onclick = async () => {
+  const id = $("models-form-id").value;
+  const body = {
+    display_name: $("models-form-name").value,
+    openrouter_model_id: $("models-form-slug").value,
+    context_length: parseInt($("models-form-ctx").value) || 128000,
+    cost_input_per_1m: parseFloat($("models-form-cost-in").value) || null,
+    cost_output_per_1m: parseFloat($("models-form-cost-out").value) || null,
+    description: $("models-form-desc").value,
+  };
+  try {
+    if (id) {
+      await api("/api/models/" + id, { method: "PUT", body: JSON.stringify(body) });
+    } else {
+      await api("/api/models", { method: "POST", body: JSON.stringify(body) });
+    }
+    $("models-form-card").style.display = "none";
+    $("models-form-status").textContent = "";
+    await loadModelCatalog();
+  } catch (e) {
+    $("models-form-status").textContent = "Error: " + e.message;
+  }
+};
+
+$("models-form-cancel").onclick = () => {
+  $("models-form-card").style.display = "none";
+  $("models-form-status").textContent = "";
+};
+// --- compat shims for tiers editor ---
+// These provide the old loadModels() / populateModelDatalist() API that the
+// tiers-editor tab still depends on, backed by the new v3 catalog data.
+async function loadModels() {
+  if (!state.orModelsLoaded) await loadORCatalog();
+  state.models = state.orModels;
+}
+function populateModelDatalist() {
+  var dl = $("#model-list");
+  if (!dl) return;
+  dl.innerHTML = "";
+  for (var _i = 0; _i < (state.models || []).length; _i++) {
+    var m = state.models[_i];
+    var o = el("option");
+    o.value = m.id;
+    o.label = m.name || m.id;
+    dl.appendChild(o);
+  }
+}
 
 // --- tier mapping ---
 async function loadTiers() {

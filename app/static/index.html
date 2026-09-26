@@ -144,42 +144,55 @@
       </div>
     </section>
 
-    <!-- Model catalog v2 (full CRUD) -->
+    <!-- Model catalog v3 — OpenRouter catalog + local routing table -->
     <section id="tab-models" class="tab" hidden>
       <div class="card">
-        <div class="toolbar-row">
-          <h1 style="margin:0">Models</h1>
-          <button class="btn btn-primary" id="models-add-btn">+ Add Model</button>
-        </div>
-        <p>The models Jev can route to. Each model must exist on OpenRouter.
-           The <span class="badge normal">fallback</span> model is used when Jev fails.</p>
-        <div id="models-error" class="error" style="display:none"></div>
-        <table id="models-table" class="data-table">
+        <h1>OpenRouter Catalog</h1>
+        <p>Search and add models from OpenRouter's live catalog to your routing table.
+           Models already in your router are marked.</p>
+        <input id="or-search" placeholder="Filter by name or model ID..." style="width:100%;margin-bottom:var(--space-3)">
+        <div id="or-count" class="mono" style="margin-bottom:var(--space-2)"></div>
+        <table id="or-table" class="data-table">
           <thead><tr>
-            <th>Display Name</th><th>OpenRouter ID</th><th>Context</th>
-            <th>Cost (in/out /1M)</th><th>Fallback</th><th>Enabled</th><th></th>
+            <th>Model ID</th><th>Name</th><th>Context</th><th>Cost /1M tokens</th><th></th>
           </tr></thead>
           <tbody></tbody>
         </table>
       </div>
 
-      <!-- Add/Edit form (hidden by default) -->
-      <div class="card" id="models-form-card" style="display:none">
-        <h2 id="models-form-title">Add Model</h2>
+      <div class="card" style="margin-top:var(--space-5)">
+        <div class="toolbar-row">
+          <h1 style="margin:0">Your Routing Models</h1>
+          <span id="models-refresh" class="btn btn-ghost" style="cursor:pointer" title="Refresh">↻</span>
+        </div>
+        <p>These are the models Jev will choose between. Changes take effect on the very next request.</p>
+        <div id="models-error" class="error" style="display:none"></div>
+        <table id="models-table" class="data-table">
+          <thead><tr>
+            <th>Display Name</th><th>OpenRouter ID</th><th>Context</th>
+            <th>Fallback</th><th>Enabled</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <!-- Edit form (hidden by default) -->
+      <div class="card" id="models-form-card" style="display:none;margin-top:var(--space-3)">
+        <h2 id="models-form-title">Edit Model</h2>
         <form id="models-form" onsubmit="return false">
           <input type="hidden" id="models-form-id">
           <div class="toolbar-row">
             <label>Display Name <input id="models-form-name" required></label>
-            <label>OpenRouter Model ID <input id="models-form-slug" required placeholder="e.g. openai/gpt-4o-mini"></label>
+            <label>OpenRouter Model ID <input id="models-form-slug" required></label>
           </div>
           <div class="toolbar-row">
             <label>Context Length <input type="number" id="models-form-ctx" required></label>
-            <label>Cost Input /1M $ <input type="number" step="0.000001" id="models-form-cost-in" placeholder="0.15"></label>
-            <label>Cost Output /1M $ <input type="number" step="0.000001" id="models-form-cost-out" placeholder="0.60"></label>
+            <label>Cost Input /1M $ <input type="number" step="0.000001" id="models-form-cost-in"></label>
+            <label>Cost Output /1M $ <input type="number" step="0.000001" id="models-form-cost-out"></label>
           </div>
           <div class="toolbar-row">
             <label>Description (shown to Jev)
-              <textarea id="models-form-desc" rows="2" style="width:100%" placeholder="Fast cheap model for simple tasks..."></textarea>
+              <textarea id="models-form-desc" rows="2" style="width:100%"></textarea>
             </label>
           </div>
           <div class="toolbar-row">
