@@ -11,7 +11,7 @@ const state = {
   logTotal: 0,
 };
 
-const $ = (sel) => document.querySelector(sel);
+const $ = (sel) => document.querySelector(sel[0] === "#" ? sel : "#" + sel);
 const el = (tag, text) => { const e = document.createElement(tag); if (text != null) e.textContent = text; return e; };
 
 // A table cell that carries its column name so the mobile card layout can show a label.
@@ -256,8 +256,11 @@ $("#spend-refresh").onclick = loadSpend;
 // --- model catalog v3 (OpenRouter catalog + local routing table) ---
 
 // OpenRouter catalog data
-state.orModels = [];
+state.orModels = [];          // full sorted catalog (feeds the tiers datalist)
+state.orTop100 = [];          // top-100 slice shown in the catalog table
 state.orModelsLoaded = false;
+state.orPage = 1;             // current catalog page (1-indexed)
+const OR_PAGE_SIZE = 20;      // models per page
 
 async function loadModelCatalog() {
   $("models-error").style.display = "none";
@@ -270,10 +273,10 @@ async function loadModelCatalog() {
 async function loadORCatalog() {
   try {
     const data = await api("/api/openrouter/models");
-    state.orModels = (data.data || []).filter(m => m.id && m.pricing);
+    const all = (data.data || []).filter(m => m.id && m.pricing);
     // Pre-sort: known good models first, then alphabetical
     const top = ["openai/", "anthropic/", "google/", "meta-llama/", "mistral/", "deepseek/", "qwen/"];
-    state.orModels.sort((a, b) => {
+    all.sort((a, b) => {
       const ai = top.findIndex(p => a.id.startsWith(p));
       const bi = top.findIndex(p => b.id.startsWith(p));
       if (ai !== -1 && bi === -1) return -1;
@@ -281,6 +284,8 @@ async function loadORCatalog() {
       if (ai !== bi) return ai - bi;
       return (a.id < b.id ? -1 : 1);
     });
+    state.orModels = all;                 // full list — feeds the tiers datalist
+    state.orTop100 = all.slice(0, 100);   // top 100 models, paginated below
     state.orModelsLoaded = true;
   } catch (e) {
     $("or-table").querySelector("tbody").innerHTML =
@@ -294,10 +299,24 @@ function renderORTable() {
   const localIDs = new Set(state.myModels.map(m => m.openrouter_model_id));
   const tb = $("or-table").querySelector("tbody");
   tb.innerHTML = "";
-  let shown = 0;
-  for (const m of state.orModels) {
-    if (q && !(m.id.toLowerCase().includes(q) || (m.name || "").toLowerCase().includes(q))) continue;
-    shown++;
+
+  // Filter the top-100 catalog by the search query.
+  const matches = q
+    ? state.orTop100.filter(m => m.id.toLowerCase().includes(q) || (m.name || "").toLowerCase().includes(q))
+    : state.orTop100;
+
+  // Paginate.
+  const pageCount = Math.max(1, Math.ceil(matches.length / OR_PAGE_SIZE));
+  if (state.orPage < 1) state.orPage = 1;
+  if (state.orPage > pageCount) state.orPage = pageCount;
+  const start = (state.orPage - 1) * OR_PAGE_SIZE;
+  const pageModels = matches.slice(start, start + OR_PAGE_SIZE);
+
+  if (pageModels.length === 0) {
+    tb.innerHTML = '<tr><td colspan="5">No models match your search.</td></tr>';
+  }
+
+  for (const m of pageModels) {
     const tr = el("tr");
     const added = localIDs.has(m.id);
     if (added) tr.className = "row-disabled";
@@ -347,11 +366,22 @@ function renderORTable() {
     tr.appendChild(actTd);
     tb.appendChild(tr);
   }
-  $("or-count").textContent = shown + " of " + state.orModels.length + " models shown";
+
+  $("or-count").textContent =
+    (matches.length === 0 ? "0" : (start + 1) + "–" + (start + pageModels.length)) +
+    " of " + matches.length + " matching · top 100 of " + state.orModels.length + " total";
+
+  $("or-page").textContent = "Page " + state.orPage + " of " + pageCount;
+  $("or-prev").disabled = state.orPage <= 1;
+  $("or-next").disabled = state.orPage >= pageCount;
 }
 
-// Search on input
-$("or-search").oninput = renderORTable;
+// Search on input (reset to page 1)
+$("or-search").oninput = () => { state.orPage = 1; renderORTable(); };
+
+// Pagination controls
+$("or-prev").onclick = () => { state.orPage--; renderORTable(); };
+$("or-next").onclick = () => { state.orPage++; renderORTable(); };
 
 // --- Your models (local routing table) ---
 state.myModels = [];
