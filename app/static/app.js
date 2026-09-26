@@ -61,7 +61,7 @@ function fmtAgo(iso) {
 }
 
 // --- theme toggle ---
-function currentTheme() { return document.documentElement.dataset.theme || "light"; }
+function currentTheme() { return document.documentElement.dataset.theme || "dark"; }
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
   localStorage.setItem("ar-theme", t);
@@ -77,8 +77,8 @@ function applyTheme(t) {
 applyTheme(currentTheme());
 $("#theme-toggle").onclick = () => applyTheme(currentTheme() === "dark" ? "light" : "dark");
 
-// --- mobile nav drawer ---
-const navEl = $("#primary-nav");
+// --- mobile nav drawer (the whole sidebar slides in as the drawer below 900px) ---
+const navEl = $("#sidebar");
 const backdrop = $("#drawer-backdrop");
 const navToggle = $("#nav-toggle");
 function openDrawer() {
@@ -89,7 +89,7 @@ function openDrawer() {
   // click that opened the drawer lands focus on the toggle button itself, and the drawer is
   // not focusable until its new visibility has been computed.
   const focusFirstItem = () => {
-    const first = navEl.querySelector("button");
+    const first = navEl.querySelector("#primary-nav button");
     if (first) first.focus();
   };
   requestAnimationFrame(focusFirstItem);
@@ -103,6 +103,17 @@ function closeDrawer() {
 navToggle.onclick = () => (navEl.classList.contains("is-open") ? closeDrawer() : openDrawer());
 backdrop.onclick = closeDrawer;
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+// --- desktop sidebar collapse (icon-only rail) ---
+const collapseBtn = $("#sidebar-collapse");
+if (collapseBtn) {
+  collapseBtn.onclick = () => {
+    const collapsed = document.documentElement.classList.toggle("sidebar-collapsed");
+    localStorage.setItem("ar-sidebar", collapsed ? "collapsed" : "expanded");
+    collapseBtn.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
+    collapseBtn.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+  };
+}
 
 // --- auth bar ---
 $("#save-key").onclick = () => {

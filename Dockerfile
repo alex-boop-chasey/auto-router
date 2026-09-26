@@ -12,7 +12,8 @@ COPY app /app/app
 
 # Create a venv and install dependencies inside the image.
 RUN uv venv /app/.venv && \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev && \
+    uv pip install prometheus-client redis[hiredis] opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1

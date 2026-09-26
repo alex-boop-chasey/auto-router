@@ -5,12 +5,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import admin_api
+from .cache import init_cache, make_and_check_cache as check_cache
 from .config import PROJECT_ROOT, SETTINGS, load_tiers, tier_to_model
 from .db import (
     get_settings,
@@ -21,7 +22,17 @@ from .db import (
 )
 from .decision import classify_tier
 from .fallback import flatten_messages
+from .key_manager import check_key_budget, record_spend, set_budget_pool
+from .logger import logger
+from .metrics import (
+    record_cache_hit,
+    record_cache_miss,
+    record_jev_decision,
+    record_request,
+)
+from .prompt_cleaner import basic_clean, clean_prompt
 from .proxy import non_stream_completion, stream_completion
+from .rate_limiter import check_rate_limit, init_rate_limiter
 
 router = APIRouter()
 STATIC_DIR = PROJECT_ROOT / "app" / "static"
@@ -47,6 +58,11 @@ def create_app(init_db_on_startup: bool = True) -> FastAPI:
     async def _lifespan(app: FastAPI):
         if init_db_on_startup:
             await init_db()
+        from .db import get_pool
+        pool = await get_pool()
+        set_budget_pool(pool)
+        init_rate_limiter()
+        init_cache()
         yield
 
     app = FastAPI(title="auto-router", version="0.1.0", lifespan=_lifespan)
@@ -71,6 +87,13 @@ async def health() -> dict[str, Any]:
         "status": "ok",
         "last_successful_decision_at": last_at.isoformat() if last_at else None,
     }
+
+
+@router.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
+    from .metrics import metrics_response
+    body, content_type = metrics_response()
+    return Response(content=body, media_type=content_type)
 
 
 @router.get("/", include_in_schema=False)
@@ -114,12 +137,73 @@ async def chat_completions(
     messages = [{"role": m.role, "content": m.content or ""} for m in req.messages]
     prompt_text = flatten_messages(messages)
 
+    # --- Rate limit check (must pass before any model work) ---
+    rate_ok, rate_detail = check_rate_limit(caller_id)
+    if not rate_ok:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. {rate_detail}",
+        )
+
+    # --- Budget check (must pass before any spend) ---
+    budget_ok, budget_remaining = await check_key_budget(caller_id)
+    if not budget_ok:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Budget exceeded. Remaining: ${budget_remaining:.4f}",
+        )
+
+    # --- Cache check (skip Jev + model if we have it) ---
+    import json as _json_cache
+    cache_key, cached_raw = check_cache(req.model, messages, req.temperature)
+    if cached_raw is not None:
+        record_cache_hit()
+        return JSONResponse(content=_json_cache.loads(cached_raw))
+
+    record_cache_miss()
+
     preview: str | None = None
     if preview_enabled:
         preview = prompt_text[: SETTINGS.prompt_preview_length]
 
     start_ns = _time_ns()
     settings = await get_settings()
+
+    # --- Prompt cleaning pipeline ---
+    clean_meta: dict[str, Any] = {}
+    if settings.get("prompt_cleaning_enabled", True):
+        # Layer 1: basic regex clean (always runs if enabled)
+        cleaned_text = basic_clean(prompt_text)
+        if cleaned_text != prompt_text:
+            clean_meta["basic_cleaned"] = True
+            prompt_text = cleaned_text
+
+        # Layer 2: smart compaction (toggleable, gated by length)
+        if (
+            settings.get("prompt_compaction_enabled", False)
+            and len(prompt_text) >= settings.get("prompt_compaction_min_chars", 500)
+        ):
+            from .config import SETTINGS as _SETTINGS
+            from .prompt_cleaner import smart_compact
+
+            try:
+                compacted = await smart_compact(
+                    prompt_text,
+                    model=settings["prompt_compaction_model"],
+                    api_key=_SETTINGS.openrouter_api_key,
+                )
+                if compacted and len(compacted) < len(prompt_text) * 0.95:
+                    clean_meta["compacted"] = True
+                    clean_meta["compaction_model"] = settings["prompt_compaction_model"]
+                    clean_meta["original_length"] = len(prompt_text)
+                    clean_meta["compacted_length"] = len(compacted)
+                    clean_meta["compression_ratio"] = round(
+                        len(compacted) / max(len(prompt_text), 1), 3
+                    )
+                    prompt_text = compacted
+            except Exception:
+                clean_meta["compaction_error"] = True
+
     decision = await classify_tier(
         prompt_text, confidence_gap=settings["confidence_gap_threshold"]
     )
@@ -127,6 +211,28 @@ async def chat_completions(
     used_fallback = decision.used_fallback
     jev_error = decision.jev_error
     model = tier_to_model(tier)
+
+    # Structured JSON log of the Jev decision
+    logger.jev_decision(
+        caller_id=caller_id,
+        tier=tier,
+        confidence=decision.confidence,
+        gap=decision.probability_gap,
+        latency_ms=decision.decision_latency_ms,
+        success=not decision.used_fallback,
+        error=decision.jev_error,
+    )
+    record_jev_decision(tier, not decision.used_fallback, decision.decision_latency_ms / 1000.0)
+    if decision.used_fallback:
+        logger.fallback(caller_id=caller_id, reason=decision.jev_error or "unknown", tier=tier)
+    if decision.escalation_fired:
+        logger.escalation(
+            caller_id=caller_id,
+            original_tier=decision.jev_raw_choice or "unknown",
+            escalated_tier=tier,
+            confidence=decision.confidence or 0,
+            gap=decision.probability_gap or 0,
+        )
 
     if req.stream:
         return StreamingResponse(
@@ -170,12 +276,13 @@ async def chat_completions(
         raise
     except RuntimeError as exc:
         error_msg = f"{type(exc).__name__}: {exc}"
+        latency_ms = (_time_ns() - start_ns) // 1_000_000
         await _persist_log(
             caller_id=caller_id,
             tier=tier,
             model=model,
             usage=None,
-            latency_ms=(_time_ns() - start_ns) // 1_000_000,
+            latency_ms=latency_ms,
             success=False,
             error=error_msg,
             preview=preview,
@@ -185,6 +292,13 @@ async def chat_completions(
             probability_gap=decision.probability_gap,
             probabilities=decision.probabilities,
             escalation_fired=decision.escalation_fired,
+        )
+        logger.error(
+            caller_id=caller_id,
+            error=error_msg,
+            tier=tier,
+            model=model,
+            latency_ms=latency_ms,
         )
         raise HTTPException(status_code=502, detail=error_msg)
 
@@ -206,6 +320,35 @@ async def chat_completions(
         probabilities=decision.probabilities,
         escalation_fired=decision.escalation_fired,
     )
+    logger.request(
+        caller_id=caller_id,
+        tier=tier,
+        model=model,
+        input_tokens=usage.get("prompt_tokens", 0) if usage else 0,
+        output_tokens=usage.get("completion_tokens", 0) if usage else 0,
+        cost_usd=float(usage.get("cost", 0)) if usage else 0.0,
+        latency_ms=latency_ms,
+        stream=False,
+        used_fallback=used_fallback,
+        escalation_fired=decision.escalation_fired,
+        confidence=decision.confidence,
+        probability_gap=decision.probability_gap,
+    )
+    # --- Metrics + spend tracking + cache ---
+    record_request(
+        caller_id=caller_id,
+        tier=tier,
+        model=model,
+        success=True,
+        latency_s=latency_ms / 1000.0,
+        input_tokens=usage.get("prompt_tokens", 0) if usage else 0,
+        output_tokens=usage.get("completion_tokens", 0) if usage else 0,
+        cost_usd=float(usage.get("cost", 0)) if usage else 0.0,
+    )
+    cost = float(usage.get("cost", 0)) if usage else 0.0
+    await record_spend(caller_id, cost)
+    from .cache import set_cached
+    set_cached(cache_key, json.dumps(result).encode())
     return JSONResponse(content=result)
 
 
@@ -263,6 +406,13 @@ async def _streamed_response(
             probabilities=probabilities,
             escalation_fired=escalation_fired,
         )
+        logger.error(
+            caller_id=caller_id,
+            error=error_msg,
+            tier=tier,
+            model=model,
+            latency_ms=(_time_ns() - started_ns) // 1_000_000,
+        )
         return
 
     await _persist_log(
@@ -281,6 +431,32 @@ async def _streamed_response(
         probabilities=probabilities,
         escalation_fired=escalation_fired,
     )
+    logger.request(
+        caller_id=caller_id,
+        tier=tier,
+        model=model,
+        input_tokens=usage.get("prompt_tokens", 0) if usage else 0,
+        output_tokens=usage.get("completion_tokens", 0) if usage else 0,
+        cost_usd=float(usage.get("cost", 0)) if usage else 0.0,
+        latency_ms=(_time_ns() - started_ns) // 1_000_000,
+        stream=True,
+        used_fallback=used_fallback,
+        escalation_fired=escalation_fired,
+        confidence=confidence,
+        probability_gap=probability_gap,
+    )
+    record_request(
+        caller_id=caller_id,
+        tier=tier,
+        model=model,
+        success=True,
+        latency_s=((_time_ns() - started_ns) // 1_000_000) / 1000.0,
+        input_tokens=usage.get("prompt_tokens", 0) if usage else 0,
+        output_tokens=usage.get("completion_tokens", 0) if usage else 0,
+        cost_usd=float(usage.get("cost", 0)) if usage else 0.0,
+    )
+    cost = float(usage.get("cost", 0)) if usage else 0.0
+    await record_spend(caller_id, cost)
 
 
 async def _persist_log(

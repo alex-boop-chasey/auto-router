@@ -60,24 +60,35 @@
   --radius-pill: 9999px;
 
   /* --- Layout + elevation --- */
-  --header-h: 3.75rem;
+  --header-h: 3.25rem;
+  --sidebar-w: 15.5rem;
+  --sidebar-w-collapsed: 4.25rem;
   --content-max: 1280px;
   --shadow-sm: 0 1px 2px rgb(3 6 32 / 6%), 0 1px 3px rgb(3 6 32 / 10%);
   --shadow-md: 0 6px 20px rgb(3 6 32 / 10%);
   --shadow-lg: 0 16px 40px rgb(3 6 32 / 18%);
   --transition: 160ms ease;
+
+  /* --- Layered surfaces (sidebar sits one level "below" the page) --- */
+  --bg-sidebar: #f1f2f5;
+  --bg-topbar: #ffffff;
 }
 
 [data-theme="dark"] {
-  --bg-page: #030620;                /* rgb(3 6 32) */
-  --bg-surface: #080c28;             /* rgb(8 12 40) */
-  --bg-elevated: #0b1136;
-  --bg-inset: rgb(255 255 255 / 5%);
-  --text-heading: #f7f8f8;
+  /* Layered surfaces, darkest to lightest: sidebar < page < surface < elevated < inset.
+     Deliberately not pure black — a near-black navy keeps the brand's blue hue and avoids
+     the "OLED inverted" look, while each layer step is still clearly distinguishable. */
+  --bg-sidebar: #06091f;              /* deepest layer: the nav rail reads as its own plane */
+  --bg-page: #0a0e26;
+  --bg-topbar: #0a0e26;
+  --bg-surface: #10152f;
+  --bg-elevated: #151b38;
+  --bg-inset: rgb(255 255 255 / 6%);
+  --text-heading: #f7f8fa;
   --text-default: #e5ecf6;           /* rgb(229 236 246) */
-  --text-muted: rgb(229 236 246 / 60%);
-  --border: rgb(255 255 255 / 10%);
-  --border-strong: rgb(255 255 255 / 20%);
+  --text-muted: rgb(229 236 246 / 62%);
+  --border: rgb(255 255 255 / 9%);
+  --border-strong: rgb(255 255 255 / 18%);
   --color-primary-soft: rgb(1 97 239 / 22%);
   --color-accent-soft: rgb(109 40 217 / 26%);
   --color-success-soft: rgb(16 122 87 / 26%);

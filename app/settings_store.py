@@ -7,6 +7,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "confidence_gap_threshold": 0.15,
     "prompt_preview_default": False,
     "routing_conservatism": "balanced",
+    "prompt_cleaning_enabled": True,
+    "prompt_compaction_enabled": False,
+    "prompt_compaction_model": "openai/gpt-4o-mini",
+    "prompt_compaction_min_chars": 500,
 }
 
 # Named routing-conservatism presets -> confidence_gap_threshold value.
@@ -24,6 +28,10 @@ _SETTING_TYPES: dict[str, type] = {
     "confidence_gap_threshold": float,
     "prompt_preview_default": bool,
     "routing_conservatism": str,
+    "prompt_cleaning_enabled": bool,
+    "prompt_compaction_enabled": bool,
+    "prompt_compaction_model": str,
+    "prompt_compaction_min_chars": int,
 }
 
 
@@ -48,6 +56,8 @@ def decode_setting(key: str, raw: Any) -> Any:
     target = _SETTING_TYPES.get(key)
     if target is float:
         return float(raw)
+    if target is int:
+        return int(raw)
     if target is bool:
         if isinstance(raw, bool):
             return raw
@@ -89,5 +99,24 @@ def resolve_settings_update(payload: dict[str, Any]) -> list[tuple[str, Any]]:
         if not isinstance(v, bool):
             raise SettingsValidationError("prompt_preview_default must be a boolean")
         updates["prompt_preview_default"] = v
+
+    for bool_key in ("prompt_cleaning_enabled", "prompt_compaction_enabled"):
+        if bool_key in payload:
+            v = payload[bool_key]
+            if not isinstance(v, bool):
+                raise SettingsValidationError(f"{bool_key} must be a boolean")
+            updates[bool_key] = v
+
+    if "prompt_compaction_model" in payload:
+        v = payload["prompt_compaction_model"]
+        if not isinstance(v, str) or not v.strip():
+            raise SettingsValidationError("prompt_compaction_model must be a non-empty string")
+        updates["prompt_compaction_model"] = v.strip()
+
+    if "prompt_compaction_min_chars" in payload:
+        v = payload["prompt_compaction_min_chars"]
+        if not isinstance(v, int) or v < 100:
+            raise SettingsValidationError("prompt_compaction_min_chars must be an integer >= 100")
+        updates["prompt_compaction_min_chars"] = v
 
     return list(updates.items())

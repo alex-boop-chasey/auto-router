@@ -19,12 +19,30 @@ services:
       - auto-router
       - hermes-net
 
+  redis:
+    image: redis:7-alpine
+    container_name: auto-router-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - auto-router
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   router:
     build:
       context: .
     container_name: auto-router
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     env_file:
       - .env
@@ -34,11 +52,10 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-jev_router}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - REDIS_URL=redis://redis:6379/0
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
-      # Bind-mount config so tier-mapping edits from the UI persist on the host
-      # and take effect immediately (load_tiers reads the file per request).
       - ./config:/app/config
     networks:
       - auto-router
@@ -47,6 +64,7 @@ services:
 
 volumes:
   postgres-data:
+  redis-data:
 
 networks:
   auto-router:

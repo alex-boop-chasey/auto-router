@@ -8,6 +8,7 @@ import asyncpg
 from fastapi import HTTPException, Request
 
 from .config import SETTINGS
+from .key_manager import ensure_budget_columns
 from .settings_store import DEFAULT_SETTINGS, decode_setting
 
 _pool: asyncpg.Pool | None = None
@@ -84,6 +85,7 @@ async def init_db() -> None:
         )
         await _seed_keys(conn)
         await _seed_settings(conn)
+        await ensure_budget_columns(pool)
 
 
 async def _seed_keys(conn: asyncpg.Connection) -> None:

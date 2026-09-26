@@ -29,6 +29,8 @@ class Decision:
     probability_gap: float | None = None
     probabilities: dict[str, float] | None = None
     escalation_fired: bool = False
+    jev_raw_choice: str | None = None
+    decision_latency_ms: int = 0
 
 
 def _normalise(prompt: str) -> str:
@@ -128,6 +130,8 @@ class TierClassifier:
 
     async def classify(self, prompt: str) -> Decision:
         """Return a Decision with routing-transparency metadata."""
+        from time import perf_counter_ns
+
         payload = {
             "model": self.model,
             "questions": {
@@ -151,6 +155,7 @@ class TierClassifier:
         }
 
         jev_error: str | None = None
+        t0 = perf_counter_ns()
 
         async with httpx.AsyncClient() as client:
             try:
@@ -202,6 +207,8 @@ class TierClassifier:
                                 escalation_fired = (
                                     len(sorted_probs) > 1 and gap < self.confidence_gap
                                 )
+                                raw_choice = choice
+                                decision_latency_ms = (perf_counter_ns() - t0) // 1_000_000
                                 return Decision(
                                     tier=tier,
                                     used_fallback=False,
@@ -210,6 +217,8 @@ class TierClassifier:
                                     probability_gap=gap,
                                     probabilities=probabilities,
                                     escalation_fired=escalation_fired,
+                                    jev_raw_choice=raw_choice,
+                                    decision_latency_ms=decision_latency_ms,
                                 )
                             jev_error = f"Unexpected tier choice: {choice}"
                         except KeyError as exc:
