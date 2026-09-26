@@ -5,6 +5,7 @@
 :root {
   /* --- Brand palette --- */
   --color-primary: #0161ef;          /* rgb(1 97 239) */
+  --color-primary-text: #0161ef;     /* same as primary in light mode; brightened in dark mode for AA text contrast */
   --color-primary-hover: #0154cf;    /* rgb(1 84 207) */
   --color-primary-soft: rgb(1 97 239 / 10%);
   --color-accent: #6d28d9;           /* rgb(109 40 217) */
@@ -90,6 +91,7 @@
   --border: rgb(255 255 255 / 9%);
   --border-strong: rgb(255 255 255 / 18%);
   --color-primary-soft: rgb(1 97 239 / 22%);
+  --color-primary-text: #5b9dff;      /* brightened brand blue: ~6.3:1 on the darkest (sidebar) layer, meets AA for text */
   --color-accent-soft: rgb(109 40 217 / 26%);
   --color-success-soft: rgb(16 122 87 / 26%);
   --color-warning-soft: rgb(180 83 9 / 26%);
