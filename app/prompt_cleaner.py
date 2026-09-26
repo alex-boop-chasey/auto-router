@@ -20,6 +20,27 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import httpx
+
+# Reused across calls instead of opening a fresh httpx.AsyncClient() (and a
+# fresh TCP+TLS handshake) every time smart_compact() runs.
+_HTTP_CLIENT: httpx.AsyncClient | None = None
+
+
+def _get_compactor_client() -> httpx.AsyncClient:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None:
+        _HTTP_CLIENT = httpx.AsyncClient()
+    return _HTTP_CLIENT
+
+
+async def aclose_compactor_client() -> None:
+    """Close the shared compactor HTTP client. Call on app shutdown."""
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is not None:
+        await _HTTP_CLIENT.aclose()
+        _HTTP_CLIENT = None
+
 # ---------------------------------------------------------------------------
 # Basic cleaning (regex, always runs if enabled)
 # ---------------------------------------------------------------------------
@@ -129,7 +150,7 @@ async def smart_compact(
     """
     import json as _json
 
-    import httpx
+    client = _get_compactor_client()
 
     payload = {
         "model": model,
@@ -148,15 +169,14 @@ async def smart_compact(
         "X-Title": "auto-router-compactor",
     }
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{base_url}/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    resp = await client.post(
+        f"{base_url}/chat/completions",
+        json=payload,
+        headers=headers,
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    data = resp.json()
 
     return data["choices"][0]["message"]["content"].strip()
 

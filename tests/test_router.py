@@ -185,10 +185,18 @@ async def test_chat_completions_non_stream_shape(client: AsyncClient, monkeypatc
         captured["log"] = kwargs
         return 1
 
+    async def _fake_check_budget(caller_id):
+        return True, 999.0
+
+    async def _fake_record_spend(caller_id, cost):
+        return None
+
     monkeypatch.setattr(main, "classify_tier", _fake_classify)
     monkeypatch.setattr(main, "get_settings", _fake_get_settings)
     monkeypatch.setattr(main, "non_stream_completion", _fake_non_stream)
     monkeypatch.setattr(main, "log_request", _fake_log)
+    monkeypatch.setattr(main, "check_key_budget", _fake_check_budget)
+    monkeypatch.setattr(main, "record_spend", _fake_record_spend)
 
     r = await client.post(
         "/v1/chat/completions",
@@ -243,10 +251,18 @@ async def test_chat_completions_stream_shape(client: AsyncClient, monkeypatch):
         captured["log"] = kwargs
         return 1
 
+    async def _fake_check_budget(caller_id):
+        return True, 999.0
+
+    async def _fake_record_spend(caller_id, cost):
+        return None
+
     monkeypatch.setattr(main, "classify_tier", _fake_classify)
     monkeypatch.setattr(main, "get_settings", _fake_get_settings)
     monkeypatch.setattr(main, "stream_completion", _fake_stream)
     monkeypatch.setattr(main, "log_request", _fake_log)
+    monkeypatch.setattr(main, "check_key_budget", _fake_check_budget)
+    monkeypatch.setattr(main, "record_spend", _fake_record_spend)
 
     async with client.stream(
         "POST",

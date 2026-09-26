@@ -5,13 +5,26 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+)
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import admin_api
-from .cache import init_cache, make_and_check_cache as check_cache
+from .cache import init_cache, set_cached
+from .cache import make_and_check_cache as check_cache
 from .config import PROJECT_ROOT, SETTINGS, load_tiers, tier_to_model
 from .db import (
     get_settings,
@@ -20,7 +33,7 @@ from .db import (
     log_request,
     verify_api_key,
 )
-from .decision import classify_tier
+from .decision import aclose_jev_client, classify_tier
 from .fallback import flatten_messages
 from .key_manager import check_key_budget, record_spend, set_budget_pool
 from .logger import logger
@@ -30,7 +43,7 @@ from .metrics import (
     record_jev_decision,
     record_request,
 )
-from .prompt_cleaner import basic_clean, clean_prompt
+from .prompt_cleaner import aclose_compactor_client, basic_clean
 from .proxy import non_stream_completion, stream_completion
 from .rate_limiter import check_rate_limit, init_rate_limiter
 
@@ -64,6 +77,8 @@ def create_app(init_db_on_startup: bool = True) -> FastAPI:
         init_rate_limiter()
         init_cache()
         yield
+        await aclose_jev_client()
+        await aclose_compactor_client()
 
     app = FastAPI(title="auto-router", version="0.1.0", lifespan=_lifespan)
     app.include_router(router)
@@ -138,7 +153,7 @@ async def chat_completions(
     prompt_text = flatten_messages(messages)
 
     # --- Rate limit check (must pass before any model work) ---
-    rate_ok, rate_detail = check_rate_limit(caller_id)
+    rate_ok, rate_detail = await check_rate_limit(caller_id)
     if not rate_ok:
         raise HTTPException(
             status_code=429,
@@ -155,7 +170,7 @@ async def chat_completions(
 
     # --- Cache check (skip Jev + model if we have it) ---
     import json as _json_cache
-    cache_key, cached_raw = check_cache(req.model, messages, req.temperature)
+    cache_key, cached_raw = await check_cache(req.model, messages, req.temperature)
     if cached_raw is not None:
         record_cache_hit()
         return JSONResponse(content=_json_cache.loads(cached_raw))
@@ -304,14 +319,25 @@ async def chat_completions(
 
     usage = result.get("usage")
     latency_ms = (_time_ns() - start_ns) // 1_000_000
-    await _persist_log(
+
+    # Everything below (request-log insert, spend update, response cache
+    # write, structured log line, metrics) is bookkeeping that has nothing to
+    # do with the answer the caller is waiting on. It used to run inline
+    # here, adding a DB insert + a DB update + a Redis write to every single
+    # response's latency. It now runs as a Starlette BackgroundTask *after*
+    # the response bytes have already gone out, so callers only wait on the
+    # model call itself. Trade-off: if the process dies in the brief window
+    # between "response sent" and "background task ran", that one request's
+    # log/spend/cache write is lost — an acceptable, standard trade-off for
+    # telemetry that's normally never observed.
+    background = BackgroundTasks()
+    background.add_task(
+        _finalize_success,
         caller_id=caller_id,
         tier=tier,
         model=model,
         usage=usage,
         latency_ms=latency_ms,
-        success=True,
-        error=None,
         preview=preview,
         used_fallback=used_fallback,
         jev_error=jev_error,
@@ -319,7 +345,62 @@ async def chat_completions(
         probability_gap=decision.probability_gap,
         probabilities=decision.probabilities,
         escalation_fired=decision.escalation_fired,
+        cache_key=cache_key,
+        result=result,
     )
+    return JSONResponse(content=result, background=background)
+
+
+async def _finalize_success(
+    *,
+    caller_id: str,
+    tier: str,
+    model: str,
+    usage: dict[str, Any] | None,
+    latency_ms: int,
+    preview: str | None,
+    used_fallback: bool,
+    jev_error: str | None,
+    confidence: float | None,
+    probability_gap: float | None,
+    probabilities: dict[str, float] | None,
+    escalation_fired: bool,
+    cache_key: str,
+    result: dict[str, Any],
+) -> None:
+    """Post-response bookkeeping for a successful non-streaming completion.
+
+    Runs as a BackgroundTask after the response has already been sent (see
+    chat_completions above) — none of this should ever add to client-visible
+    latency. Each step is independently guarded so one failure (e.g. a
+    transient DB blip) can't swallow the others.
+    """
+    try:
+        await _persist_log(
+            caller_id=caller_id,
+            tier=tier,
+            model=model,
+            usage=usage,
+            latency_ms=latency_ms,
+            success=True,
+            error=None,
+            preview=preview,
+            used_fallback=used_fallback,
+            jev_error=jev_error,
+            confidence=confidence,
+            probability_gap=probability_gap,
+            probabilities=probabilities,
+            escalation_fired=escalation_fired,
+        )
+    except Exception as exc:  # noqa: BLE001 — background task, must not raise
+        logger.error(
+            caller_id=caller_id,
+            error=f"post-response log_request failed: {exc}",
+            tier=tier,
+            model=model,
+            latency_ms=latency_ms,
+        )
+
     logger.request(
         caller_id=caller_id,
         tier=tier,
@@ -330,11 +411,10 @@ async def chat_completions(
         latency_ms=latency_ms,
         stream=False,
         used_fallback=used_fallback,
-        escalation_fired=decision.escalation_fired,
-        confidence=decision.confidence,
-        probability_gap=decision.probability_gap,
+        escalation_fired=escalation_fired,
+        confidence=confidence,
+        probability_gap=probability_gap,
     )
-    # --- Metrics + spend tracking + cache ---
     record_request(
         caller_id=caller_id,
         tier=tier,
@@ -345,11 +425,23 @@ async def chat_completions(
         output_tokens=usage.get("completion_tokens", 0) if usage else 0,
         cost_usd=float(usage.get("cost", 0)) if usage else 0.0,
     )
+
     cost = float(usage.get("cost", 0)) if usage else 0.0
-    await record_spend(caller_id, cost)
-    from .cache import set_cached
-    set_cached(cache_key, json.dumps(result).encode())
-    return JSONResponse(content=result)
+    try:
+        await record_spend(caller_id, cost)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            caller_id=caller_id,
+            error=f"post-response record_spend failed: {exc}",
+            tier=tier,
+            model=model,
+            latency_ms=latency_ms,
+        )
+
+    try:
+        await set_cached(cache_key, json.dumps(result).encode())
+    except Exception:  # noqa: BLE001 — cache.set_cached already swallows its own errors; belt and suspenders
+        pass
 
 
 async def _streamed_response(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +12,36 @@ import httpx
 from .config import SETTINGS
 
 TIER_ORDER = {"simple": 0, "medium": 1, "complex": 2}
+
+# Reused across requests instead of opening a fresh httpx.AsyncClient() (and
+# therefore a fresh TCP+TLS handshake) on every single classification call —
+# this is the highest-traffic outbound call in the router, so connection
+# keep-alive here removes real per-request latency. Mirrors the pattern
+# already used for the OpenRouter client in proxy.get_openrouter_client().
+_HTTP_CLIENT: httpx.AsyncClient | None = None
+
+
+def _get_jev_client() -> httpx.AsyncClient:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None:
+        _HTTP_CLIENT = httpx.AsyncClient()
+    return _HTTP_CLIENT
+
+
+async def aclose_jev_client() -> None:
+    """Close the shared Jev HTTP client. Call on app shutdown."""
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is not None:
+        await _HTTP_CLIENT.aclose()
+        _HTTP_CLIENT = None
+
+
+@asynccontextmanager
+async def _borrowed_jev_client() -> AsyncIterator[httpx.AsyncClient]:
+    """Yield the shared client without closing it on exit (unlike a plain
+    ``async with httpx.AsyncClient()``) — the whole point is to keep the
+    connection alive across requests."""
+    yield _get_jev_client()
 
 
 @dataclass
@@ -157,7 +189,7 @@ class TierClassifier:
         jev_error: str | None = None
         t0 = perf_counter_ns()
 
-        async with httpx.AsyncClient() as client:
+        async with _borrowed_jev_client() as client:
             try:
                 resp = await client.post(
                     self.url,

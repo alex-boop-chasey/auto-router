@@ -3,13 +3,22 @@ Redis-backed response cache for auto-router.
 
 Caches LLM responses by (model, messages_hash, temperature).
 Saves cost by avoiding redundant API calls.
+
+Uses redis.asyncio rather than the sync redis client: this module is called
+from async request handlers, and the sync client's .get()/.setex() block the
+whole asyncio event loop for the duration of the Redis round trip — under any
+real concurrency that serialises every in-flight request behind each other's
+cache I/O. redis.asyncio talks the same wire protocol/API but awaits instead
+of blocking.
 """
 from __future__ import annotations
-import hashlib, json
+
+import hashlib
+import json
 from typing import Any
 
 try:
-    import redis as _redis
+    import redis.asyncio as _redis
     HAS_REDIS = True
 except ImportError:
     HAS_REDIS = False
@@ -35,25 +44,25 @@ def _make_cache_key(model: str, messages: list[dict], temperature: float | None)
     digest = hashlib.sha256(payload.encode()).hexdigest()
     return f"ar:cache:{model}:{digest}"
 
-def get_cached(cache_key: str) -> bytes | None:
+async def get_cached(cache_key: str) -> bytes | None:
     if not _cache_client:
         return None
     try:
-        return _cache_client.get(cache_key)
+        return await _cache_client.get(cache_key)
     except Exception:
         return None
 
-def set_cached(cache_key: str, data: bytes, ttl: int | None = None) -> None:
+async def set_cached(cache_key: str, data: bytes, ttl: int | None = None) -> None:
     if not _cache_client:
         return
     try:
-        _cache_client.setex(cache_key, ttl or CACHE_TTL, data)
+        await _cache_client.setex(cache_key, ttl or CACHE_TTL, data)
     except Exception:
         pass
 
-def make_and_check_cache(
+async def make_and_check_cache(
     model: str, messages: list[dict], temperature: float | None
 ) -> tuple[str, bytes | None]:
     key = _make_cache_key(model, messages, temperature)
-    data = get_cached(key)
+    data = await get_cached(key)
     return key, data

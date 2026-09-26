@@ -1,13 +1,19 @@
 """
 Rate limiter - RPM + TPM enforcement per key.
 Redis-backed when available, in-memory fallback for single-worker.
+
+Uses redis.asyncio for the same reason as cache.py: the sync redis client's
+pipeline.execute() blocks the whole event loop for a full Redis round trip,
+and this check runs on every single chat completion request.
 """
 from __future__ import annotations
-import time, threading
+
+import threading
+import time
 from typing import Any
 
 try:
-    import redis as _redis
+    import redis.asyncio as _redis
     HAS_REDIS = True
 except ImportError:
     HAS_REDIS = False
@@ -27,7 +33,7 @@ def init_rate_limiter(redis_url: str | None = None) -> None:
 def _now_sec() -> int:
     return int(time.time())
 
-def check_rate_limit(
+async def check_rate_limit(
     key_id: str,
     rpm_limit: int | None = None,
     tpm_limit: int | None = None,
@@ -51,7 +57,7 @@ def check_rate_limit(
         if tpm_limit and estimated_tokens > 0:
             pipe.incrby(tpm_key, estimated_tokens)
             pipe.expire(tpm_key, 120)
-        results = pipe.execute()
+        results = await pipe.execute()
 
         idx = 0
         if rpm_limit:
@@ -91,7 +97,7 @@ def check_rate_limit(
 
     return True, ""
 
-def track_tokens(key_id: str, actual_tokens: int) -> None:
+async def track_tokens(key_id: str, actual_tokens: int) -> None:
     """Add actual token usage after response (for TPM enforcement)."""
     if not actual_tokens:
         return
@@ -99,8 +105,8 @@ def track_tokens(key_id: str, actual_tokens: int) -> None:
     minute_bucket = now // 60
     if _redis_client:
         tpm_key = f"rl:tpm:{key_id}:{minute_bucket}"
-        _redis_client.incrby(tpm_key, actual_tokens)
-        _redis_client.expire(tpm_key, 120)
+        await _redis_client.incrby(tpm_key, actual_tokens)
+        await _redis_client.expire(tpm_key, 120)
 
 def key_rate_limit_headers(key_id: str, rpm_limit: int | None, tpm_limit: int | None) -> dict[str, str]:
     """Return X-RateLimit headers."""

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from time import monotonic
 from typing import Any
 
 import asyncpg
@@ -12,6 +13,21 @@ from .key_manager import ensure_budget_columns
 from .settings_store import DEFAULT_SETTINGS, decode_setting
 
 _pool: asyncpg.Pool | None = None
+
+# In-memory cache for get_settings(). The routing hot path calls get_settings()
+# on every single chat completion, but settings only change when an operator
+# edits them via the admin UI — so a short TTL cache removes a DB round trip
+# from the common case while still picking up admin edits almost immediately
+# (explicit invalidation on every write, below, means edits are visible on the
+# very next request rather than waiting out the TTL).
+_settings_cache: dict[str, Any] | None = None
+_settings_cache_at: float = 0.0
+_SETTINGS_CACHE_TTL_SECONDS = 5.0
+
+
+def _invalidate_settings_cache() -> None:
+    global _settings_cache
+    _settings_cache = None
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -419,7 +435,16 @@ async def delete_key(key_id: str) -> bool:
 
 
 async def get_settings() -> dict[str, Any]:
-    """Return the merged settings (defaults overlaid with any DB rows)."""
+    """Return the merged settings (defaults overlaid with any DB rows).
+
+    Cached for _SETTINGS_CACHE_TTL_SECONDS (see module docstring above); the
+    cache is force-invalidated on every write via set_setting()/set_settings().
+    """
+    global _settings_cache, _settings_cache_at
+    now = monotonic()
+    if _settings_cache is not None and (now - _settings_cache_at) < _SETTINGS_CACHE_TTL_SECONDS:
+        return dict(_settings_cache)
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT key, value FROM settings")
@@ -432,7 +457,10 @@ async def get_settings() -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             val = raw
         merged[key] = decode_setting(key, val)
-    return merged
+
+    _settings_cache = merged
+    _settings_cache_at = now
+    return dict(merged)
 
 
 async def set_setting(key: str, value: Any) -> None:
@@ -449,6 +477,7 @@ async def set_setting(key: str, value: Any) -> None:
             key,
             json.dumps(value),
         )
+    _invalidate_settings_cache()
 
 
 async def set_settings(updates: list[tuple[str, Any]]) -> None:
@@ -468,6 +497,7 @@ async def set_settings(updates: list[tuple[str, Any]]) -> None:
                 key,
                 json.dumps(value),
             )
+    _invalidate_settings_cache()
 
 
 # --- Model catalog (enabled/disabled shortlist) ---------------------------

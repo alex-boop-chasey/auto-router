@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -81,12 +82,41 @@ SETTINGS = Settings()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TIERS_PATH = PROJECT_ROOT / "config" / "tiers.json"
 
+_tiers_cache: dict[str, Any] | None = None
+_tiers_cache_mtime: float | None = None
+_tiers_cache_path: Path | None = None
+
 
 def load_tiers(path: Path | None = None) -> dict[str, Any]:
+    """Load tiers.json, cached by mtime.
+
+    The router calls this on every single request (to resolve tier -> model),
+    so a plain re-read + json.loads() on every call is wasted disk I/O once
+    the file stops changing. os.stat() is orders of magnitude cheaper than a
+    full read+parse, so we use it as a cheap freshness check: if the file's
+    mtime hasn't moved since our last read, hand back a deep copy of the
+    cached dict instead of touching disk again. A save via tiers_store.save_tiers()
+    (atomic tmp + os.replace) always changes mtime, so admin edits still take
+    effect on the very next request — no explicit cache invalidation needed.
+    """
+    global _tiers_cache, _tiers_cache_mtime, _tiers_cache_path
     path = path or TIERS_PATH
     if not path.exists():
         raise FileNotFoundError(f"Missing tiers config: {path}")
-    return json.loads(path.read_text())
+
+    mtime = path.stat().st_mtime
+    if (
+        _tiers_cache is not None
+        and _tiers_cache_path == path
+        and _tiers_cache_mtime == mtime
+    ):
+        return deepcopy(_tiers_cache)
+
+    data = json.loads(path.read_text())
+    _tiers_cache = data
+    _tiers_cache_mtime = mtime
+    _tiers_cache_path = path
+    return deepcopy(data)
 
 
 def min_context_length(tiers: dict[str, Any] | None = None) -> int:
