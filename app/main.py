@@ -200,40 +200,57 @@ async def chat_completions(
         else:
             preview = prompt_text[: SETTINGS.prompt_preview_length]
 
-    # --- Prompt cleaning pipeline ---
+    # --- Prompt cleaning & compaction ---
+    # Applied to the CALLER'S message (the current user turn) so the FINAL model
+    # receives the clean/compacted text — not just the Jev classifier. The system
+    # prompt and prior history stay untouched.
     clean_meta: dict[str, Any] = {}
-    if settings.get("prompt_cleaning_enabled", True):
-        # Layer 1: basic regex clean (always runs if enabled)
-        cleaned_text = basic_clean(prompt_text)
-        if cleaned_text != prompt_text:
-            clean_meta["basic_cleaned"] = True
-            prompt_text = cleaned_text
+    effective_messages = [dict(m) for m in messages]
+    last_user_idx = max(
+        (i for i, m in enumerate(effective_messages) if m["role"] == "user"),
+        default=None,
+    )
 
-        # Layer 2: smart compaction (toggleable, gated by length)
+    if last_user_idx is not None:
+        user_text = effective_messages[last_user_idx]["content"]
+
+        # Layer 1: basic regex clean — free, always runs when enabled. Strips
+        # stutters, fillers ("um", "uh", "you know", …) and doubled words.
+        if settings.get("prompt_cleaning_enabled", True):
+            cleaned = basic_clean(user_text)
+            if cleaned != user_text:
+                clean_meta["basic_cleaned"] = True
+                user_text = cleaned
+
+        # Layer 2: smart LLM compaction — only for long waffling prompts.
         if (
             settings.get("prompt_compaction_enabled", False)
-            and len(prompt_text) >= settings.get("prompt_compaction_min_chars", 500)
+            and len(user_text) >= settings.get("prompt_compaction_min_chars", 500)
         ):
-            from .config import SETTINGS as _SETTINGS
             from .prompt_cleaner import smart_compact
 
             try:
                 compacted = await smart_compact(
-                    prompt_text,
+                    user_text,
                     model=settings["prompt_compaction_model"],
-                    api_key=_SETTINGS.openrouter_api_key,
+                    api_key=SETTINGS.openrouter_api_key,
                 )
-                if compacted and len(compacted) < len(prompt_text) * 0.95:
+                if compacted and len(compacted) < len(user_text) * 0.95:
                     clean_meta["compacted"] = True
                     clean_meta["compaction_model"] = settings["prompt_compaction_model"]
-                    clean_meta["original_length"] = len(prompt_text)
+                    clean_meta["original_length"] = len(user_text)
                     clean_meta["compacted_length"] = len(compacted)
                     clean_meta["compression_ratio"] = round(
-                        len(compacted) / max(len(prompt_text), 1), 3
+                        len(compacted) / max(len(user_text), 1), 3
                     )
-                    prompt_text = compacted
+                    user_text = compacted
             except Exception:
                 clean_meta["compaction_error"] = True
+
+        effective_messages[last_user_idx]["content"] = user_text
+
+    # Jev classifies the cleaned prompt so routing matches what the model gets.
+    prompt_text = flatten_messages(effective_messages)
 
     # --- Load models for Jev classification (DB-driven, not tiers.json) ---
     enabled_models = await get_enabled_models_for_routing()
@@ -291,7 +308,7 @@ async def chat_completions(
                 caller_id=caller_id,
                 tier=tier,
                 model=model,
-                messages=messages,
+                messages=effective_messages,
                 preview=preview,
                 used_fallback=used_fallback,
                 jev_error=jev_error,
@@ -317,7 +334,7 @@ async def chat_completions(
     try:
         result = await non_stream_completion(
             model=model,
-            messages=messages,
+            messages=effective_messages,
             temperature=req.temperature,
             max_tokens=req.max_tokens,
             top_p=req.top_p,

@@ -137,6 +137,7 @@ document.querySelectorAll("nav button").forEach((btn) => {
     if (btn.dataset.tab === "models") loadModelCatalog();
     if (btn.dataset.tab === "routing") loadRoutingEngine();
     if (btn.dataset.tab === "keys") loadKeys();
+    if (btn.dataset.tab === "compression") loadCompression();
     if (btn.dataset.tab === "settings") loadSettings();
   };
 });
@@ -706,6 +707,36 @@ $("#settings-form").onsubmit = async (e) => {
     $("#settings-gap").value = data.settings.confidence_gap_threshold;
     $("#settings-preset").value = data.settings.routing_conservatism;
   } catch (e) { showError("Save settings: " + e.message); }
+};
+
+// --- prompt compression ---
+async function loadCompression() {
+  showError("");
+  try {
+    const data = await api("/api/settings");
+    const s = data.settings;
+    $("#compression-clean").checked = !!s.prompt_cleaning_enabled;
+    $("#compaction-enabled").checked = !!s.prompt_compaction_enabled;
+    $("#compaction-model").value = s.prompt_compaction_model || "";
+    $("#compaction-min-chars").value = s.prompt_compaction_min_chars ?? 500;
+  } catch (e) { showError("Compression: " + e.message); }
+}
+
+$("#compression-form").onsubmit = async (e) => {
+  e.preventDefault();
+  showError("");
+  const body = {
+    prompt_cleaning_enabled: $("#compression-clean").checked,
+    prompt_compaction_enabled: $("#compaction-enabled").checked,
+  };
+  const model = $("#compaction-model").value.trim();
+  if (model) body.prompt_compaction_model = model;
+  const minChars = Number($("#compaction-min-chars").value);
+  if (Number.isFinite(minChars) && minChars >= 100) body.prompt_compaction_min_chars = minChars;
+  try {
+    const data = await api("/api/settings", { method: "PUT", body: JSON.stringify(body) });
+    $("#compression-status").textContent = " saved at " + new Date().toLocaleTimeString();
+  } catch (e) { showError("Save compression: " + e.message); }
 };
 
 // --- init ---
