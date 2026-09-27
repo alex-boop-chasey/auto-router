@@ -671,6 +671,7 @@ async function loadSettings() {
     $("#settings-gap").value = data.settings.confidence_gap_threshold;
     $("#settings-preview-default").checked = !!data.settings.prompt_preview_default;
     $("#settings-preview-enabled").checked = !!data.settings.prompt_preview_enabled;
+    $("#settings-preview-verbose").checked = !!data.settings.prompt_preview_verbose;
   } catch (e) { showError("Settings: " + e.message); }
 }
 
@@ -690,6 +691,7 @@ $("#settings-form").onsubmit = async (e) => {
   const body = {
     prompt_preview_default: $("#settings-preview-default").checked,
     prompt_preview_enabled: $("#settings-preview-enabled").checked,
+    prompt_preview_verbose: $("#settings-preview-verbose").checked,
   };
   if (preset === "custom") {
     body.confidence_gap_threshold = Number($("#settings-gap").value);

@@ -195,7 +195,10 @@ async def chat_completions(
 
     preview: str | None = None
     if preview_enabled and settings.get("prompt_preview_enabled", True):
-        preview = prompt_text[: SETTINGS.prompt_preview_length]
+        if settings.get("prompt_preview_verbose", False):
+            preview = prompt_text
+        else:
+            preview = prompt_text[: SETTINGS.prompt_preview_length]
 
     # --- Prompt cleaning pipeline ---
     clean_meta: dict[str, Any] = {}

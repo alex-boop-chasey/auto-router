@@ -7,6 +7,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "confidence_gap_threshold": 0.15,
     "prompt_preview_default": False,
     "prompt_preview_enabled": True,
+    "prompt_preview_verbose": False,
     "routing_conservatism": "balanced",
     "prompt_cleaning_enabled": True,
     "prompt_compaction_enabled": False,
@@ -32,6 +33,7 @@ _SETTING_TYPES: dict[str, type] = {
     "confidence_gap_threshold": float,
     "prompt_preview_default": bool,
     "prompt_preview_enabled": bool,
+    "prompt_preview_verbose": bool,
     "routing_conservatism": str,
     "prompt_cleaning_enabled": bool,
     "prompt_compaction_enabled": bool,
@@ -108,7 +110,7 @@ def resolve_settings_update(payload: dict[str, Any]) -> list[tuple[str, Any]]:
             raise SettingsValidationError("prompt_preview_default must be a boolean")
         updates["prompt_preview_default"] = v
 
-    for bool_key in ("prompt_cleaning_enabled", "prompt_compaction_enabled", "prompt_preview_enabled"):
+    for bool_key in ("prompt_cleaning_enabled", "prompt_compaction_enabled", "prompt_preview_enabled", "prompt_preview_verbose"):
         if bool_key in payload:
             v = payload[bool_key]
             if not isinstance(v, bool):
