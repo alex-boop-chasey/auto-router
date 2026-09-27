@@ -443,8 +443,10 @@ function showModelsSubTab(which) {
   const isCatalog = which === "catalog";
   $("#models-sub-catalog").hidden = !isCatalog;
   $("#models-sub-yours").hidden = isCatalog;
-  $("#models-tab-catalog").className = "btn " + (isCatalog ? "btn-primary" : "btn-ghost");
-  $("#models-tab-yours").className = "btn " + (isCatalog ? "btn-ghost" : "btn-primary");
+  $("#models-tab-catalog").className = "tab" + (isCatalog ? " active" : "");
+  $("#models-tab-catalog").setAttribute("aria-selected", String(isCatalog));
+  $("#models-tab-yours").className = "tab" + (isCatalog ? "" : " active");
+  $("#models-tab-yours").setAttribute("aria-selected", String(!isCatalog));
 }
 showModelsSubTab("catalog");
 $("#models-tab-catalog").onclick = () => showModelsSubTab("catalog");
