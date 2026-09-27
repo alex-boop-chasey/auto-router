@@ -292,6 +292,7 @@ async def api_get_settings() -> dict[str, Any]:
 class SettingsPayload(BaseModel):
     confidence_gap_threshold: float | None = None
     prompt_preview_default: bool | None = None
+    prompt_preview_enabled: bool | None = None
     routing_conservatism: str | None = None
     prompt_cleaning_enabled: bool | None = None
     prompt_compaction_enabled: bool | None = None

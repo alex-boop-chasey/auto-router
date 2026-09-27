@@ -135,7 +135,7 @@ document.querySelectorAll("nav button").forEach((btn) => {
     if (btn.dataset.tab === "log") loadLog();
     if (btn.dataset.tab === "spend") { loadSpend(); loadHealth(); }
     if (btn.dataset.tab === "models") loadModelCatalog();
-    if (btn.dataset.tab === "tiers") loadTiers();
+    if (btn.dataset.tab === "routing") loadRoutingEngine();
     if (btn.dataset.tab === "keys") loadKeys();
     if (btn.dataset.tab === "settings") loadSettings();
   };
@@ -560,66 +560,57 @@ $("models-form-cancel").onclick = () => {
   $("models-form-card").style.display = "none";
   $("models-form-status").textContent = "";
 };
-// --- compat shims for tiers editor ---
-// These provide the old loadModels() / populateModelDatalist() API that the
-// tiers-editor tab still depends on, backed by the new v3 catalog data.
+// Preload the OpenRouter catalog (used at init + after saving the API key).
 async function loadModels() {
   if (!state.orModelsLoaded) await loadORCatalog();
-  state.models = state.orModels;
-}
-function populateModelDatalist() {
-  var dl = $("#model-list");
-  if (!dl) return;
-  dl.innerHTML = "";
-  for (var _i = 0; _i < (state.models || []).length; _i++) {
-    var m = state.models[_i];
-    var o = el("option");
-    o.value = m.id;
-    o.label = m.name || m.id;
-    dl.appendChild(o);
-  }
 }
 
-// --- tier mapping ---
-async function loadTiers() {
-  showError("");
-  await loadModels();
-  try {
-    const tiers = await api("/api/tiers");
-    const box = $("#tiers-editor");
-    box.innerHTML = "";
-    for (const name of ["simple", "medium", "complex"]) {
-      const t = tiers[name] || {};
-      const wrap = el("div");
-      wrap.className = "tier-row";
-      wrap.appendChild(el("label", name + ": "));
-      const input = el("input"); input.setAttribute("list", "model-list"); input.value = t.model || "";
-      input.dataset.tier = name; input.size = 40; input.className = "tier-model";
-      const ctx = el("input"); ctx.type = "number"; ctx.value = t.context_length || ""; ctx.dataset.tier = name; ctx.className = "tier-ctx";
-      input.onchange = () => {
-        const found = state.models.find((m) => m.id === input.value);
-        if (found && found.context_length) ctx.value = found.context_length;
-      };
-      wrap.appendChild(input);
-      wrap.appendChild(el("label", " context_length: "));
-      wrap.appendChild(ctx);
-      box.appendChild(wrap);
-    }
-  } catch (e) { showError("Tier mapping: " + e.message); }
+// --- routing engine ---
+function routingSetBias(name, val) {
+  const pct = Math.round((val == null ? 0.5 : val) * 100);
+  $("#routing-" + name).value = pct;
+  $("#routing-" + name + "-val").textContent = pct + "%";
 }
-$("#tiers-show-all").onchange = populateModelDatalist;
-$("#tiers-save").onclick = async () => {
+["speed", "accuracy", "cost"].forEach((name) => {
+  $("#routing-" + name).oninput = () => {
+    $("#routing-" + name + "-val").textContent = $("#routing-" + name).value + "%";
+  };
+});
+async function loadRoutingEngine() {
   showError("");
-  const tiers = {};
-  document.querySelectorAll(".tier-model").forEach((i) => {
-    const t = i.dataset.tier;
-    tiers[t] = { model: i.value.trim(), context_length: Number(document.querySelector(`.tier-ctx[data-tier="${t}"]`).value) };
-  });
   try {
-    await api("/api/tiers", { method: "PUT", body: JSON.stringify({ tiers }) });
-    $("#tiers-status").textContent = " saved at " + new Date().toLocaleTimeString();
-  } catch (e) { showError("Save tiers: " + e.message); }
-};
+    const data = await api("/api/settings");
+    routingSetBias("speed", data.settings.speed_bias);
+    routingSetBias("accuracy", data.settings.accuracy_bias);
+    routingSetBias("cost", data.settings.cost_bias);
+  } catch (e) { showError("Routing engine: " + e.message); }
+}
+async function saveRouting() {
+  showError("");
+  try {
+    await api("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        speed_bias: Number($("#routing-speed").value) / 100,
+        accuracy_bias: Number($("#routing-accuracy").value) / 100,
+        cost_bias: Number($("#routing-cost").value) / 100,
+      }),
+    });
+    $("#routing-status").textContent = " saved at " + new Date().toLocaleTimeString();
+  } catch (e) { showError("Save routing: " + e.message); }
+}
+$("#routing-save").onclick = saveRouting;
+document.querySelectorAll(".routing-preset").forEach((btn) => {
+  btn.onclick = async () => {
+    $("#routing-speed").value = btn.dataset.speed;
+    $("#routing-accuracy").value = btn.dataset.accuracy;
+    $("#routing-cost").value = btn.dataset.cost;
+    $("#routing-speed-val").textContent = btn.dataset.speed + "%";
+    $("#routing-accuracy-val").textContent = btn.dataset.accuracy + "%";
+    $("#routing-cost-val").textContent = btn.dataset.cost + "%";
+    await saveRouting();
+  };
+});
 
 // --- keys ---
 async function loadKeys() {
@@ -679,22 +670,10 @@ async function loadSettings() {
     $("#settings-preset").value = data.settings.routing_conservatism || "balanced";
     $("#settings-gap").value = data.settings.confidence_gap_threshold;
     $("#settings-preview-default").checked = !!data.settings.prompt_preview_default;
-    setBias("speed", data.settings.speed_bias);
-    setBias("accuracy", data.settings.accuracy_bias);
-    setBias("cost", data.settings.cost_bias);
+    $("#settings-preview-enabled").checked = !!data.settings.prompt_preview_enabled;
   } catch (e) { showError("Settings: " + e.message); }
 }
 
-function setBias(name, val) {
-  const pct = Math.round((val == null ? 0.5 : val) * 100);
-  $("#settings-" + name).value = pct;
-  $("#settings-" + name + "-val").textContent = pct + "%";
-}
-["speed", "accuracy", "cost"].forEach((name) => {
-  $("#settings-" + name).oninput = () => {
-    $("#settings-" + name + "-val").textContent = $("#settings-" + name).value + "%";
-  };
-});
 $("#settings-preset").onchange = () => {
   const p = $("#settings-preset").value;
   if (p !== "custom" && state.presets && state.presets[p] != null) {
@@ -710,9 +689,7 @@ $("#settings-form").onsubmit = async (e) => {
   const preset = $("#settings-preset").value;
   const body = {
     prompt_preview_default: $("#settings-preview-default").checked,
-    speed_bias: Number($("#settings-speed").value) / 100,
-    accuracy_bias: Number($("#settings-accuracy").value) / 100,
-    cost_bias: Number($("#settings-cost").value) / 100,
+    prompt_preview_enabled: $("#settings-preview-enabled").checked,
   };
   if (preset === "custom") {
     body.confidence_gap_threshold = Number($("#settings-gap").value);

@@ -190,12 +190,12 @@ async def chat_completions(
 
     record_cache_miss()
 
-    preview: str | None = None
-    if preview_enabled:
-        preview = prompt_text[: SETTINGS.prompt_preview_length]
-
     start_ns = _time_ns()
     settings = await get_settings()
+
+    preview: str | None = None
+    if preview_enabled and settings.get("prompt_preview_enabled", True):
+        preview = prompt_text[: SETTINGS.prompt_preview_length]
 
     # --- Prompt cleaning pipeline ---
     clean_meta: dict[str, Any] = {}
