@@ -139,8 +139,13 @@
 
     <!-- Model catalog v3 — OpenRouter catalog + local routing table -->
     <section id="tab-models" class="tab" hidden>
-      <div class="card">
-        <h1>OpenRouter Catalog</h1>
+      <div class="toolbar-row" style="gap:var(--space-2);margin-bottom:var(--space-4)">
+        <button class="btn btn-primary" id="models-tab-catalog" type="button">OpenRouter models</button>
+        <button class="btn btn-ghost" id="models-tab-yours" type="button">Your models</button>
+      </div>
+      <div id="models-sub-catalog">
+        <div class="card">
+          <h1>OpenRouter Catalog</h1>
         <p>Search and add models from OpenRouter's live catalog to your routing table.
            Models already in your router are marked.</p>
         <div class="toolbar-row" style="gap:var(--space-2);margin-bottom:var(--space-3)">
@@ -162,10 +167,12 @@
           </div>
         </div>
       </div>
+      </div><!-- /models-sub-catalog -->
 
-      <div class="card" style="margin-top:var(--space-5)">
-        <div class="toolbar-row">
-          <h1 style="margin:0">Your Routing Models</h1>
+      <div id="models-sub-yours" hidden>
+              <div class="card">
+                <div class="toolbar-row">
+                  <h1 style="margin:0">Your Routing Models</h1>
           <span id="models-refresh" class="btn btn-ghost" style="cursor:pointer" title="Refresh">↻</span>
         </div>
         <p>These are the models Jev will choose between. Changes take effect on the very next request.</p>
@@ -205,6 +212,7 @@
           </div>
         </form>
       </div>
+      </div><!-- /models-sub-yours -->
     </section>
 
     <!-- Tier mapping -->
@@ -263,6 +271,21 @@
         <p>Editable without redeploy. A named conservatism preset sets the
         confidence-gap threshold; editing the threshold directly flips it to "custom".</p>
         <form id="settings-form">
+          <fieldset style="border:1px solid var(--border);border-radius:var(--radius);padding:var(--space-3);margin-bottom:var(--space-4)">
+            <legend>Jev priorities — how to weigh model selection</legend>
+            <div class="toolbar-row" style="align-items:center;gap:var(--space-3);flex-wrap:wrap">
+              <label style="flex:1;min-width:12rem">Speed <span id="settings-speed-val" class="mono"></span>
+                <input type="range" id="settings-speed" min="0" max="100" step="5" style="width:100%">
+              </label>
+              <label style="flex:1;min-width:12rem">Accuracy <span id="settings-accuracy-val" class="mono"></span>
+                <input type="range" id="settings-accuracy" min="0" max="100" step="5" style="width:100%">
+              </label>
+              <label style="flex:1;min-width:12rem">Cost <span id="settings-cost-val" class="mono"></span>
+                <input type="range" id="settings-cost" min="0" max="100" step="5" style="width:100%">
+              </label>
+            </div>
+            <p class="mono" style="margin-top:var(--space-2)">Higher = more important. These weights are passed into Jev's routing instruction for every request.</p>
+          </fieldset>
           <div class="toolbar-row">
             <label>Routing conservatism
               <select id="settings-preset">

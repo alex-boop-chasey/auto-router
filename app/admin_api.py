@@ -297,6 +297,9 @@ class SettingsPayload(BaseModel):
     prompt_compaction_enabled: bool | None = None
     prompt_compaction_model: str | None = None
     prompt_compaction_min_chars: int | None = None
+    speed_bias: float | None = None
+    accuracy_bias: float | None = None
+    cost_bias: float | None = None
 
 
 @router.put("/settings", dependencies=[Depends(db.verify_api_key)])

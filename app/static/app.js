@@ -436,7 +436,19 @@ $("or-next").onclick = () => { state.orPage++; renderORTable(); };
 })();
 
 // Sort dropdown — resort + repaginate on change
-$("or-sort").onchange = () => { state.orPage = 1; sortORCatalog(); renderORTable(); };
+$("#or-sort").onchange = () => { state.orPage = 1; sortORCatalog(); renderORTable(); };
+
+// Models sub-tabs (OpenRouter models vs Your models)
+function showModelsSubTab(which) {
+  const isCatalog = which === "catalog";
+  $("#models-sub-catalog").hidden = !isCatalog;
+  $("#models-sub-yours").hidden = isCatalog;
+  $("#models-tab-catalog").className = "btn " + (isCatalog ? "btn-primary" : "btn-ghost");
+  $("#models-tab-yours").className = "btn " + (isCatalog ? "btn-ghost" : "btn-primary");
+}
+showModelsSubTab("catalog");
+$("#models-tab-catalog").onclick = () => showModelsSubTab("catalog");
+$("#models-tab-yours").onclick = () => showModelsSubTab("yours");
 
 // --- Your models (local routing table) ---
 state.myModels = [];
@@ -667,8 +679,22 @@ async function loadSettings() {
     $("#settings-preset").value = data.settings.routing_conservatism || "balanced";
     $("#settings-gap").value = data.settings.confidence_gap_threshold;
     $("#settings-preview-default").checked = !!data.settings.prompt_preview_default;
+    setBias("speed", data.settings.speed_bias);
+    setBias("accuracy", data.settings.accuracy_bias);
+    setBias("cost", data.settings.cost_bias);
   } catch (e) { showError("Settings: " + e.message); }
 }
+
+function setBias(name, val) {
+  const pct = Math.round((val == null ? 0.5 : val) * 100);
+  $("#settings-" + name).value = pct;
+  $("#settings-" + name + "-val").textContent = pct + "%";
+}
+["speed", "accuracy", "cost"].forEach((name) => {
+  $("#settings-" + name).oninput = () => {
+    $("#settings-" + name + "-val").textContent = $("#settings-" + name).value + "%";
+  };
+});
 $("#settings-preset").onchange = () => {
   const p = $("#settings-preset").value;
   if (p !== "custom" && state.presets && state.presets[p] != null) {
@@ -682,7 +708,12 @@ $("#settings-form").onsubmit = async (e) => {
   e.preventDefault();
   showError("");
   const preset = $("#settings-preset").value;
-  const body = { prompt_preview_default: $("#settings-preview-default").checked };
+  const body = {
+    prompt_preview_default: $("#settings-preview-default").checked,
+    speed_bias: Number($("#settings-speed").value) / 100,
+    accuracy_bias: Number($("#settings-accuracy").value) / 100,
+    cost_bias: Number($("#settings-cost").value) / 100,
+  };
   if (preset === "custom") {
     body.confidence_gap_threshold = Number($("#settings-gap").value);
   } else {

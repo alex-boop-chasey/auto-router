@@ -11,6 +11,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "prompt_compaction_enabled": False,
     "prompt_compaction_model": "openai/gpt-4o-mini",
     "prompt_compaction_min_chars": 500,
+    "speed_bias": 0.5,
+    "accuracy_bias": 0.5,
+    "cost_bias": 0.5,
 }
 
 # Named routing-conservatism presets -> confidence_gap_threshold value.
@@ -32,6 +35,9 @@ _SETTING_TYPES: dict[str, type] = {
     "prompt_compaction_enabled": bool,
     "prompt_compaction_model": str,
     "prompt_compaction_min_chars": int,
+    "speed_bias": float,
+    "accuracy_bias": float,
+    "cost_bias": float,
 }
 
 
@@ -118,5 +124,16 @@ def resolve_settings_update(payload: dict[str, Any]) -> list[tuple[str, Any]]:
         if not isinstance(v, int) or v < 100:
             raise SettingsValidationError("prompt_compaction_min_chars must be an integer >= 100")
         updates["prompt_compaction_min_chars"] = v
+
+    for bias_key in ("speed_bias", "accuracy_bias", "cost_bias"):
+        if bias_key in payload:
+            v = payload[bias_key]
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                raise SettingsValidationError(f"{bias_key} must be a number")
+            if not (0.0 <= f <= 1.0):
+                raise SettingsValidationError(f"{bias_key} must be between 0 and 1")
+            updates[bias_key] = round(f, 3)
 
     return list(updates.items())

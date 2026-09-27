@@ -249,6 +249,11 @@ async def chat_completions(
         confidence_gap=settings["confidence_gap_threshold"],
         choices=choices,
         fallback_model_id=fallback_model_id,
+        preferences={
+            "speed": float(settings.get("speed_bias", 0.5)),
+            "accuracy": float(settings.get("accuracy_bias", 0.5)),
+            "cost": float(settings.get("cost_bias", 0.5)),
+        },
     )
     tier = decision.tier  # in dynamic mode, tier IS the model_id
     used_fallback = decision.used_fallback

@@ -137,6 +137,7 @@ class TierClassifier:
         confidence_gap: float | None = None,
         choices: dict[str, str] | None = None,
         fallback_model_id: str | None = None,
+        preferences: dict[str, float] | None = None,
     ) -> None:
         self.url = SETTINGS.jev_url
         self.model = SETTINGS.jev_model
@@ -148,6 +149,18 @@ class TierClassifier:
         self.timeout = 10.0
         self.choices = choices or {}
         self.fallback_model_id = fallback_model_id or "openai/gpt-4o-mini"
+        self.preferences = preferences or {}
+
+    def _instructions(self) -> str:
+        """Build the Jev choice instruction from the speed/accuracy/cost biases."""
+        speed = self.preferences.get("speed", 0.5)
+        accuracy = self.preferences.get("accuracy", 0.5)
+        cost = self.preferences.get("cost", 0.5)
+        return (
+            "Which model is best suited for this task? Weigh the choice by "
+            f"these priorities: speed={speed:.2f}, accuracy={accuracy:.2f}, "
+            f"cost={cost:.2f} (each 0-1, higher means more important)."
+        )
 
     @staticmethod
     def _resolve_with_confidence(
@@ -190,7 +203,7 @@ class TierClassifier:
                 "questions": {
                     "pick": {
                         "type": "choice",
-                        "instructions": "Which model is best suited for this task?",
+                        "instructions": self._instructions(),
                         "criteria": self.choices,
                     }
                 },
@@ -321,9 +334,11 @@ async def classify_tier(
     confidence_gap: float | None = None,
     choices: dict[str, str] | None = None,
     fallback_model_id: str | None = None,
+    preferences: dict[str, float] | None = None,
 ) -> Decision:
     return await TierClassifier(
         confidence_gap=confidence_gap,
         choices=choices,
         fallback_model_id=fallback_model_id,
+        preferences=preferences,
     ).classify(prompt)
